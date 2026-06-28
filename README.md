@@ -100,6 +100,22 @@ Credentials (env only, never in code):
 This drives the real `Detector` through an edge appearing → persisting → closing,
 and prints the `edges` table with persistence timing plus a written `recos.xlsx`.
 
+**Dashboard (clean read-only web UI):**
+
+```bash
+# terminal 1 — feed it data (synthetic, no keys; or run the live detector instead)
+./.venv/bin/python scripts/demo_live_feed.py
+
+# terminal 2 — serve the UI
+./.venv/bin/python -m src.dashboard            # http://127.0.0.1:8787
+```
+
+The dashboard reads `arb.db` read-only (never writes, never trades) and
+auto-refreshes every 1.5s. It shows: **live opportunities** (net-of-fee open
+edges with age), **mapped pairs** with both venues' top-of-book + staleness
+badges + a gross (pre-fee) edge indicator, and **recent opportunities** with
+persistence duration. Point it at any db with `--db ./arb.db --port 8787`.
+
 **Live detector** (needs keys + a non-empty `mappings.yaml`):
 
 ```bash
