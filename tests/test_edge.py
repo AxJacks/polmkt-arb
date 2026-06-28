@@ -51,6 +51,17 @@ def test_actionable_gate():
     assert not is_actionable(res.best, min_edge=0.01, min_size=100, slippage_buffer=0.005)
 
 
+def test_boundary_prices_do_not_raise():
+    # Live books can show asks/bids at exactly 0.00 or 1.00 (illiquid strikes).
+    # Fees are undefined there, but edge calc must degrade gracefully, not raise.
+    kalshi = VenueBook(0.00, 0.04, 0.96, 1.00, 0, 343, 343, 0, 0.0)
+    poly = VenueBook(0.01, 0.29, 0.71, 0.99, 1111, 1111, 1111, 1111, 0.0)
+    res = compute_edges("p1", kalshi, KalshiFeeModel(0.07, 0.0175), False,
+                        poly, PolyUSFeeModel(), False)
+    assert res.best.taker_edge < 0  # no free money at the boundary
+    assert not is_actionable(res.best, 0.01, 10, 0.005)
+
+
 def test_no_edge_when_prices_sum_high():
     # Prices leave no room after fees -> negative edge, not actionable.
     kalshi = VenueBook(0.49, 0.51, 0.49, 0.51, 100, 100, 100, 100, 0.0)

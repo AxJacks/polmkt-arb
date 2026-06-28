@@ -132,7 +132,11 @@ class Detector:
             except Exception as e:
                 log.error("pair %s: fee fetch failed: %s", pair.id, e)
                 continue
-            out = evaluate_pair(pair, self.books, kfee, pfee, self.cfg, now)
+            try:
+                out = evaluate_pair(pair, self.books, kfee, pfee, self.cfg, now)
+            except Exception as e:
+                log.error("pair %s: evaluation failed: %s", pair.id, e)
+                continue
             if isinstance(out, Skip):
                 log.debug("skip %s: %s", out.pair_id, out.reason)
                 continue
@@ -171,7 +175,10 @@ class Detector:
 
         async def poll_loop():
             while True:
-                self.evaluate_all()
+                try:
+                    self.evaluate_all()
+                except Exception as e:
+                    log.error("poll loop error: %s", e)
                 await asyncio.sleep(self.cfg.edge_poll_ms / 1000.0)
 
         await asyncio.gather(

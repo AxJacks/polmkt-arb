@@ -46,22 +46,33 @@ def sign(private_key, timestamp_ms: int, method: str, path: str) -> str:
 
 
 class _BookState:
-    """Maintains yes/no price->size level maps from snapshot + deltas (cents)."""
+    """Maintains yes/no price->size level maps from snapshot + deltas.
+
+    Live Kalshi WS format (verified 2026-06):
+      snapshot msg: yes_dollars_fp / no_dollars_fp = [[price_dollars, size], ...]
+      delta msg:    price_dollars, delta_fp, side ("yes"/"no")
+    Prices are dollar strings on a 1c tick; we key levels by integer cents and
+    store fractional-contract sizes as floats.
+    """
 
     def __init__(self) -> None:
-        self.yes: dict[int, int] = {}
-        self.no: dict[int, int] = {}
+        self.yes: dict[int, float] = {}
+        self.no: dict[int, float] = {}
+
+    @staticmethod
+    def _cents(price_str) -> int:
+        return int(round(float(price_str) * 100))
 
     def snapshot(self, msg: dict) -> None:
-        self.yes = {int(p): int(s) for p, s in msg.get("yes", [])}
-        self.no = {int(p): int(s) for p, s in msg.get("no", [])}
+        self.yes = {self._cents(p): float(s) for p, s in msg.get("yes_dollars_fp", [])}
+        self.no = {self._cents(p): float(s) for p, s in msg.get("no_dollars_fp", [])}
 
     def delta(self, msg: dict) -> None:
         side = msg["side"]
-        price = int(msg["price"])
+        price = self._cents(msg["price_dollars"])
         book = self.yes if side == "yes" else self.no
-        book[price] = book.get(price, 0) + int(msg["delta"])
-        if book[price] <= 0:
+        book[price] = book.get(price, 0.0) + float(msg["delta_fp"])
+        if book[price] <= 1e-9:
             book.pop(price, None)
 
     def top(self) -> VenueBook:
@@ -136,19 +147,31 @@ class KalshiClient(VenueClient):
     def market_is_open(self, market_id: str) -> bool:
         return self._get_market(market_id).get("status") == "active"
 
+    # Documented base coefficients for Kalshi's fee formulas. The per-series
+    # `fee_multiplier` (from the API) SCALES these; sports/special series carry a
+    # multiplier > 1. Base 0.07 is Kalshi's published quadratic taker rate; maker
+    # is ~1/4 of taker on the maker-fee variant. Unknown fee_type => raise.
+    _BASE_TAKER = {"quadratic": 0.07, "quadratic_with_maker_fees": 0.07}
+    _BASE_MAKER = {"quadratic": 0.0, "quadratic_with_maker_fees": 0.0175}
+
     def get_fee_model(self, market_id: str) -> KalshiFeeModel:
         if market_id in self._fee_cache:
             return self._fee_cache[market_id]
         market = self._get_market(market_id)
         series_ticker = market.get("series_ticker") or market_id.split("-", 1)[0]
         series = self._get(f"/series/{series_ticker}").get("series", {})
-        taker = series.get("fee_multiplier")
-        if taker is None:
+        mult = series.get("fee_multiplier")
+        ftype = series.get("fee_type")
+        if mult is None:
             raise KalshiAuthError(
                 f"Kalshi series {series_ticker} has no fee_multiplier — refusing to assume a fee")
-        # Maker multiplier field name not guaranteed; default 0 and surface in logs.
-        maker = series.get("maker_fee_multiplier", 0.0)
-        model = KalshiFeeModel(taker_multiplier=float(taker), maker_multiplier=float(maker))
+        if ftype not in self._BASE_TAKER:
+            raise KalshiAuthError(
+                f"Kalshi series {series_ticker} unknown fee_type {ftype!r} — refusing to assume a fee")
+        model = KalshiFeeModel(
+            taker_multiplier=self._BASE_TAKER[ftype] * float(mult),
+            maker_multiplier=self._BASE_MAKER[ftype] * float(mult),
+        )
         self._fee_cache[market_id] = model
         return model
 

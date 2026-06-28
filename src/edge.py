@@ -96,10 +96,12 @@ def _structure(
 
     `a_fee` / `n_fee` are FeeModel instances for the respective venues.
     """
-    # Taker: cross both asks.
+    # Taker: cross both asks. Fees are only defined for a real fillable price in
+    # (0,1); at the 0/1 boundary the leg is degenerate (no tradable size or full
+    # $1 cost) so fee=0 and the structure simply shows no edge.
     a_t_price, n_t_price = a.a_ask, n.nota_ask
-    a_t_fee = a_fee.taker_fee(a_t_price, 1) if a_t_price > 0 else 0.0
-    n_t_fee = n_fee.taker_fee(n_t_price, 1) if n_t_price > 0 else 0.0
+    a_t_fee = a_fee.taker_fee(a_t_price, 1) if 0 < a_t_price < 1 else 0.0
+    n_t_fee = n_fee.taker_fee(n_t_price, 1) if 0 < n_t_price < 1 else 0.0
     taker_net = a_t_price + n_t_price + a_t_fee + n_t_fee
     taker_edge = 1.0 - taker_net
     taker_size = min(a.a_ask_size, n.nota_ask_size)
@@ -110,8 +112,8 @@ def _structure(
 
     # Maker: rest both at the bid.
     a_m_price, n_m_price = a.a_bid, n.nota_bid
-    a_m_fee = a_fee.maker_fee(a_m_price, 1) if a_m_price > 0 else 0.0
-    n_m_fee = n_fee.maker_fee(n_m_price, 1) if n_m_price > 0 else 0.0
+    a_m_fee = a_fee.maker_fee(a_m_price, 1) if 0 < a_m_price < 1 else 0.0
+    n_m_fee = n_fee.maker_fee(n_m_price, 1) if 0 < n_m_price < 1 else 0.0
     maker_net = a_m_price + n_m_price + a_m_fee + n_m_fee
     maker_edge = 1.0 - maker_net
     maker_size = min(a.a_bid_size, n.nota_bid_size)

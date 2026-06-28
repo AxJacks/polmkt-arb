@@ -68,7 +68,11 @@ class Config:
     min_edge: float = field(default_factory=lambda: _f("MIN_EDGE", 0.02))
     min_size: int = field(default_factory=lambda: _i("MIN_SIZE", 10))
     slippage_buffer: float = field(default_factory=lambda: _f("SLIPPAGE_BUFFER", 0.005))
-    staleness_ms: int = field(default_factory=lambda: _i("STALENESS_MS", 2000))
+    # NOTE: staleness is measured from the last WS book message. Illiquid books
+    # only push on change, so a quiet (not dead) feed can look stale — hence 30s.
+    # Liquid markets (where arbs occur) update sub-second. A proper fix is
+    # connection-heartbeat liveness; tracked as a refinement.
+    staleness_ms: int = field(default_factory=lambda: _i("STALENESS_MS", 30000))
     settlement_window_s: int = field(default_factory=lambda: _i("SETTLEMENT_WINDOW_S", 3600))
     edge_poll_ms: int = field(default_factory=lambda: _i("EDGE_POLL_MS", 500))
 
