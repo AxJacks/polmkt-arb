@@ -1,0 +1,16 @@
+# candidates.yaml — SUGGESTIONS ONLY. Never tradable. Written by the Haiku
+# suggester (src/suggester.py). Review each entry by hand; if the markets truly
+# resolve identically, copy a fully-specified version into mappings.yaml. Nothing
+# here is ever loaded by the detector or executor as tradable.
+
+- kalshi_ticker: KXCPIYOY-26JUN-T0.3
+  polyus_slug: cpi-june-2026-above-0-3
+  confidence: 0.82
+  title_kalshi: "June CPI year-over-year above 0.3%?"
+  title_polyus: "Will June 2026 CPI come in above 0.3%?"
+  differing_fields:
+    - "settlement_time: Kalshi lists 12:30Z, Poly US unconfirmed — VERIFY"
+    - "tie/void on exactly 0.3% not confirmed identical"
+  model: claude-haiku-4-5
+  suggested_at: 2026-06-28T14:00:00Z
+  status: needs_review

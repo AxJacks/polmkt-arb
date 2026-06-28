@@ -1,0 +1,35 @@
+# ── Secrets & keys (NEVER commit) ───────────────────────────────
+.env
+*.pem
+*.key
+*_private*
+secrets/
+
+# ── Operator data: mappings, candidates, balances, logs ─────────
+# mappings.yaml / candidates.yaml are operator-curated and may reveal
+# strategy + positions. Ship *.example templates instead.
+mappings.yaml
+candidates.yaml
+recos.xlsx
+*.log
+arb.db
+arb.db-journal
+arb.db-wal
+arb.db-shm
+balances*.json
+positions*.json
+
+# ── Kill switch sentinel (runtime artifact) ─────────────────────
+HALT
+
+# ── Demo / scratch output ───────────────────────────────────────
+scripts/_demo_out/
+
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.coverage

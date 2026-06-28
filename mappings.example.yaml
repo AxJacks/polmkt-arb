@@ -1,0 +1,29 @@
+# mappings.yaml — TRADABLE pairs. Copy to mappings.yaml and curate BY HAND.
+#
+# A pair is tradable ONLY if every field below is present. The loader raises on
+# any missing field. `yes_means` MUST describe the SAME real-world outcome on
+# both venues — that is the entire point of the mapping. If a venue's native YES
+# is the opposite outcome, set `invert: true` for that leg and still write
+# `yes_means` as the shared outcome you are aligning to.
+#
+# settlement_time is ISO-8601 (UTC recommended, e.g. ...Z). The detector skips
+# any pair within SETTLEMENT_WINDOW_S of either leg's settlement.
+
+- id: cpi-jun-2026-over-0p3
+  verified_by: ajswag
+  verified_at: 2026-06-28
+  enabled: true
+  kalshi:
+    market_id: KXCPIYOY-26JUN-T0.3        # confirm exact ticker on Kalshi
+    yes_means: "June 2026 CPI MoM is greater than 0.3%"
+    resolution_source: "US BLS CPI release for June 2026"
+    settlement_time: 2026-07-15T12:30:00Z
+    tie_void: "Resolves NO if exactly 0.3% (strict greater-than)."
+    invert: false
+  polyus:
+    market_id: cpi-june-2026-above-0-3     # confirm exact slug on Polymarket US
+    yes_means: "June 2026 CPI MoM is greater than 0.3%"
+    resolution_source: "US BLS CPI release for June 2026"
+    settlement_time: 2026-07-15T12:30:00Z
+    tie_void: "Resolves NO if exactly 0.3% (strict greater-than)."
+    invert: false
