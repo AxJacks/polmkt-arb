@@ -140,6 +140,32 @@ def _cmd_positions(cfg) -> str:
         f"{r['venue']} {r['market_id'][:24]}: {r['net_qty']:.0f}" for r in rows)
 
 
+def edge_report_text(cfg) -> str:
+    """The empirical 'can the arb work?' readout from recorded edges."""
+    import time
+
+    from .store import Store
+    st = Store(cfg.db_path)
+    now = time.time()
+
+    def block(s) -> str:
+        if s["n"] == 0:
+            return "  no actionable edges detected"
+        top = ", ".join(f"{p}×{c}" for p, c in s["top"][:3])
+        return (f"  {s['n']} edges ({s['open_now']} open now)\n"
+                f"  catchable 1–30s: {s['catchable']}  |  persistent >30s (likely not real): {s['persistent']}\n"
+                f"  median life: {s['median_ms']/1000:.1f}s  |  biggest: {s['max_edge']*100:.1f}%\n"
+                f"  hypothetical if every one captured: ${s['hyp_profit']:.2f}\n"
+                f"  most active: {top}")
+    return ("📈 Arb edge report (paper/detection)\n— last 24h —\n"
+            + block(st.edge_stats(now - 86400))
+            + "\n— last 7d —\n" + block(st.edge_stats(now - 7 * 86400)))
+
+
+def _cmd_report(cfg) -> str:
+    return edge_report_text(cfg)
+
+
 def _cmd_dashboard(cfg) -> str:
     url = (cfg.dashboard_public_url or "").rstrip("/")
     if not url:
@@ -166,9 +192,9 @@ def listen(cfg) -> None:
     if not n.enabled:
         print("Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID).")
         return
-    n.send("🤖 command bot online. /status /pnl /positions /dashboard /version /halt /resume")
+    n.send("🤖 command bot online. /status /report /pnl /positions /dashboard /version /halt /resume")
     offset = None
-    HELP = "commands: /status /pnl /positions /dashboard /version /halt /resume /help"
+    HELP = "commands: /status /report /pnl /positions /dashboard /version /halt /resume /help"
     while True:
         try:
             r = httpx.get(_API.format(token=cfg.telegram_bot_token, method="getUpdates"),
@@ -182,6 +208,8 @@ def listen(cfg) -> None:
                     continue  # ignore everyone but the owner
                 if text.startswith("/status"):
                     n.send(_cmd_status(cfg))
+                elif text.startswith("/report"):
+                    n.send(_cmd_report(cfg))
                 elif text.startswith("/pnl"):
                     n.send(_cmd_pnl(cfg))
                 elif text.startswith("/positions"):
@@ -240,8 +268,10 @@ def main() -> None:
     elif args.cmd == "daily":
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         stats = Store(cfg.db_path).daily_stats(today)
-        Notifier.from_config(cfg).daily(stats)
-        print("daily summary sent:", stats)
+        n = Notifier.from_config(cfg)
+        n.daily(stats)
+        n.send(edge_report_text(cfg))   # nightly: also the arb edge readout
+        print("daily summary + edge report sent:", stats)
     elif args.cmd == "listen":
         listen(cfg)
 

@@ -432,6 +432,66 @@ def build_sports_pairs(cfg, kalshi_client, polyus_client, leagues="mlb"):
     return pairs
 
 
+def build_macro_pairs(cfg, kalshi_client, polyus_client):
+    """Auto-built macro pairs (CPI/jobs/GDP/unemployment) for live watching,
+    DETECTION ONLY. Includes only pairs whose comparators MATCH (e.g. both '>'),
+    so the '> vs ≥' fake edges are excluded up front. Unverified — never tradable."""
+    from datetime import datetime, timezone
+
+    from .mapping import MappedPair, VenueLeg
+    kc, pc = kalshi_client, polyus_client
+    poly, off = [], 0
+    while off < 12000:
+        b = pc._get("/markets", {"active": "true", "closed": "false",
+                                 "limit": 500, "offset": off}).get("markets", [])
+        if not b:
+            break
+        poly += b
+        off += 500
+    by_prefix = {}
+    for m in poly:
+        by_prefix.setdefault((m.get("slug") or "").split("-")[0], []).append(m)
+
+    far = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    pairs = []
+    for prefix, series_list in ROUTES.items():
+        pmkts = by_prefix.get(prefix, [])
+        if not pmkts:
+            continue
+        kmkts = []
+        for st in series_list:
+            kmkts += kc._get("/markets", {"series_ticker": st, "status": "open",
+                                          "limit": 1000}).get("markets", [])
+        for pm in pmkts:
+            ps = strike(pm.get("slug", ""), anchored=True)
+            pp = periods(pm.get("slug", "") + " " + (pm.get("question") or ""))
+            cp = comparator_poly(pm.get("slug", ""))
+            if ps is None:
+                continue
+            for km in kmkts:
+                ks = strike(km.get("yes_sub_title") or "", anchored=False)
+                kp = periods((km.get("ticker") or "") + " " + (km.get("title") or ""))
+                if ks is None or abs(ks - ps) > 1e-6:
+                    continue
+                if not ((pp & kp) & (_MON_ABBR | {"q1", "q2", "q3", "q4"})):
+                    continue
+                ck = comparator_kalshi((km.get("yes_sub_title") or "") + " "
+                                       + (km.get("title") or "") + " " + (km.get("rules_primary") or ""))
+                if cp != ck or "?" in (cp, ck):
+                    continue   # skip comparator mismatches (the fake-edge trap)
+                settle = _parse_iso(km.get("close_time")) or far
+                ymeans = f"{(km.get('title') or prefix)[:40]} {cp}{ps:g}"
+                pairs.append(MappedPair(
+                    id=f"MACRO {prefix} {cp}{ps:g}",
+                    kalshi=VenueLeg(km["ticker"], ymeans, "official agency", settle,
+                                    "auto-macro; comparator-matched; UNVERIFIED", False),
+                    polyus=VenueLeg(pm["slug"], ymeans, "official agency", settle,
+                                    "auto-macro; comparator-matched; UNVERIFIED", False),
+                    verified_by="AUTO-SCANNER (unverified)", verified_at="auto", enabled=True))
+                break
+    return pairs
+
+
 def main() -> None:
     import argparse
 

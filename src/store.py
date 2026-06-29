@@ -254,6 +254,32 @@ class Store:
                 (venue, market_id, dqty, price, ts),
             )
 
+    def edge_stats(self, since_ts: float) -> dict:
+        """Summarize detected (actionable, plausible) edges since since_ts — the
+        empirical answer to 'is there a real, capturable arb?'. Persistence is
+        the tell: fleeting edges may be real-but-hard-to-catch; edges that linger
+        for minutes are almost always venue disagreements, not free money."""
+        rows = self.conn.execute(
+            "SELECT pair_id, peak_taker_edge, size_available, closed_ts, duration_ms "
+            "FROM edges WHERE opened_ts >= ?", (since_ts,)).fetchall()
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "open_now": 0, "catchable": 0, "persistent": 0,
+                    "median_ms": 0.0, "max_edge": 0.0, "hyp_profit": 0.0, "top": []}
+        durs = sorted(r["duration_ms"] for r in rows if r["duration_ms"] is not None)
+        open_now = sum(1 for r in rows if r["closed_ts"] is None)
+        # "catchable" proxy: lived 1s–30s (long enough to act, short enough to be real)
+        catchable = sum(1 for r in rows if r["duration_ms"] is not None and 1000 <= r["duration_ms"] <= 30000)
+        persistent = sum(1 for r in rows if r["duration_ms"] is not None and r["duration_ms"] > 30000)
+        median_ms = durs[len(durs) // 2] if durs else 0.0
+        max_edge = max(r["peak_taker_edge"] for r in rows)
+        hyp = sum((r["peak_taker_edge"] or 0) * (r["size_available"] or 0) for r in rows)
+        from collections import Counter
+        top = Counter(r["pair_id"] for r in rows).most_common(5)
+        return {"n": n, "open_now": open_now, "catchable": catchable, "persistent": persistent,
+                "median_ms": float(median_ms), "max_edge": float(max_edge),
+                "hyp_profit": float(hyp), "top": top}
+
     def prune_pairs(self, keep_ids) -> int:
         """Drop pairs (and their live quotes) not in keep_ids — used by the sports
         watcher so finished games don't linger in the dashboard. Returns # removed."""

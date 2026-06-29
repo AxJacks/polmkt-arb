@@ -118,14 +118,25 @@ class Detector:
 
     def load(self) -> None:
         if self.sports_league:
-            # DETECTION ONLY: auto-matched, UNVERIFIED sports games. Never tradable.
-            from .scanner import ALL_SPORTS, build_sports_pairs
-            spec = self.sports_league.strip().lower()
-            leagues = ALL_SPORTS if spec == "all" else [x.strip() for x in spec.split(",") if x.strip()]
-            self.pairs = build_sports_pairs(self.cfg, self.kalshi, self.polyus, leagues)
+            # DETECTION ONLY: auto-matched, UNVERIFIED pairs. Never tradable.
+            from .scanner import ALL_SPORTS, build_macro_pairs, build_sports_pairs
+            toks = [x.strip() for x in self.sports_league.strip().lower().split(",") if x.strip()]
+            sport, macro = set(), False
+            for t in toks:
+                if t == "all":
+                    sport |= set(ALL_SPORTS)
+                elif t == "macro":
+                    macro = True
+                elif t in ALL_SPORTS:
+                    sport.add(t)
+            self.pairs = []
+            if sport:
+                self.pairs += build_sports_pairs(self.cfg, self.kalshi, self.polyus, sorted(sport))
+            if macro:
+                self.pairs += build_macro_pairs(self.cfg, self.kalshi, self.polyus)
             removed = self.store.prune_pairs([p.id for p in self.pairs])
-            log.warning("SPORTS watch mode (%s): %d auto-matched games (UNVERIFIED — detection only); pruned %d finished",
-                        ",".join(leagues), len(self.pairs), removed)
+            log.warning("WATCH mode (%s): %d auto-matched pairs (UNVERIFIED — detection only); pruned %d finished",
+                        ",".join(toks), len(self.pairs), removed)
         else:
             self.pairs = [p for p in load_mappings(self.cfg.mappings_path)]
             log.info("loaded %d verified mapped pairs", len(self.pairs))

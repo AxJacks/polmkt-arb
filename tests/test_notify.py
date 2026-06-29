@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from src import notify
 from src.notify import Notifier, _cmd_pnl, _cmd_positions, _cmd_status
@@ -70,6 +71,33 @@ def test_daily_stats_and_summary(tmp_path):
     s = store.daily_stats(today)
     assert s["realized"] == 0.21 and s["fills"] == 2 and s["open_positions"] == 1
     assert s["kill_switch_tripped"] is False
+
+
+def test_edge_stats_and_report(tmp_path):
+    import time
+    store = Store(str(tmp_path / "e.db"))
+    now = time.time()
+    rows = [  # (opened_ago, closed_ago_or_None, duration_ms, peak, size)
+        (10, None, None, 0.03, 20),       # open now
+        (100, 95, 5000, 0.04, 10),        # catchable (1-30s)
+        (200, 140, 60000, 0.06, 30),      # persistent (>30s, likely fake)
+    ]
+    for ago, cago, dur, peak, size in rows:
+        store.conn.execute(
+            "INSERT INTO edges (pair_id, structure, taker_edge, maker_edge, size_available, "
+            "slippage_buffer, legs_json, opened_ts, closed_ts, duration_ms, peak_taker_edge, actionable) "
+            "VALUES ('p','s',?,0,?,0.005,'[]',?,?,?,?,1)",
+            (peak, size, now - ago, (now - cago) if cago else None, dur, peak))
+    store.conn.commit()
+    s = store.edge_stats(now - 3600)
+    assert s["n"] == 3 and s["open_now"] == 1 and s["catchable"] == 1 and s["persistent"] == 1
+    assert s["max_edge"] == 0.06
+    assert s["hyp_profit"] == pytest.approx(0.03 * 20 + 0.04 * 10 + 0.06 * 30)
+
+    from src import notify
+    cfg = SimpleNamespace(db_path=str(tmp_path / "e.db"))
+    txt = notify.edge_report_text(cfg)
+    assert "edge report" in txt and "24h" in txt
 
 
 def test_command_handlers(tmp_path):
