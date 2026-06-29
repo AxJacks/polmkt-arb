@@ -128,10 +128,11 @@ def test_tracker_opens_once_for_alert_dedup(tmp_path):
     k, p = diverged_books(NOW)
     res = compute_edges("p1", k, KalshiFeeModel(0.07, 0.0), False, p, PolyUSFeeModel(), False)
     cfg = cfg_ns()
-    assert tr.on_eval("p1", res, True, cfg, NOW) is True        # opens -> alert
-    assert tr.on_eval("p1", res, True, cfg, NOW + 1) is False   # still open -> no re-alert
-    assert tr.on_eval("p1", res, False, cfg, NOW + 2) is False  # closes
-    assert tr.on_eval("p1", res, True, cfg, NOW + 3) is True    # reopens -> alert again
+    assert tr.on_eval("p1", res, True, cfg, NOW) is True          # opens -> alert
+    assert tr.on_eval("p1", res, True, cfg, NOW + 1) is False     # still open -> no re-alert
+    assert tr.on_eval("p1", res, False, cfg, NOW + 2) is False    # closes
+    assert tr.on_eval("p1", res, True, cfg, NOW + 3) is False     # flicker within cooldown -> suppressed
+    assert tr.on_eval("p1", res, True, cfg, NOW + 300) is True    # genuine reopen after cooldown -> alert
 
 
 def test_prune_pairs_removes_finished(tmp_path):
