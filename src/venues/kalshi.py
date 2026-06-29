@@ -179,6 +179,12 @@ class KalshiClient(VenueClient):
         self._fee_cache[market_id] = model
         return model
 
+    # ── account (read-only; safe in Phase 1/2 paper) ─────────
+    def get_balance(self) -> float:
+        """USD balance in dollars."""
+        bal = self._get("/portfolio/balance")
+        return float(bal.get("balance_dollars", bal.get("balance", 0)))
+
     # ── feed ─────────────────────────────────────────────────
     async def stream_books(
         self,

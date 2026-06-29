@@ -161,29 +161,52 @@ off until then): `ARMED`, `MODE` (paper/live), `MAX_CONTRACTS_PER_MARKET`,
 
 ---
 
-## Phase 2 plan (NOT built — do not enable)
+## Phase 2: executor (paper built & proven; live gated and OFF)
 
-When you approve building it:
+```bash
+./.venv/bin/python -m src.executor                 # paper mode (default, no real orders)
+./.venv/bin/python scripts/demo_paper.py           # offline proof: round-trip PnL after fees
+```
 
-- **paper mode (default):** simulate fills against live books, track PnL after
-  real fees in SQLite. Must run end-to-end before live is allowed.
-- **live mode:** refuses to start unless **all** of `--live` flag **+**
-  `ARMED=true` **+** funded balances confirmed on both venues **+** a non-empty
-  verified `mappings.yaml`.
-- **both-legs-or-cancel state machine:** place the thinner leg first as limit IOC;
-  on fill, fire the hedge as taker IOC; if leg 2 misses within `LEG2_TIMEOUT_MS`,
-  unwind leg 1 at market and log the realized cost. Client order ids; crash-
-  recoverable order state.
-- **hard limits in code**, `MAX_DAILY_LOSS` kill switch, sentinel-file kill
-  switch checked before every order, startup reconciliation of open orders /
-  positions, never auto-move funds between venues.
+- **paper mode (default):** simulates taker IOC fills against the live book and
+  books PnL **net of real fees** into SQLite (`paper_fills`, `pnl_daily`,
+  `positions`). The dashboard's *Paper PnL* panel shows it live. Proven: a 10-lot
+  hedge on a synthetic 2% divergence books +$0.21 after real fees.
+- **both-legs-or-cancel state machine** (`src/executor/state_machine.py`): places
+  the thinner leg first; on fill fires the hedge; on a short/again-failed leg 2
+  (incl. live `LEG2_TIMEOUT_MS`) it unwinds the unhedged remainder of leg 1 at
+  market — never a silent naked leg. Each fill carries a client order id.
+- **hard limits enforced in code** (`src/executor/limits.py`): max contracts/
+  market, max total capital, max concurrent arbs, max order size, MIN_EDGE,
+  MAX_DAILY_LOSS. Any breach rejects the action.
+- **kill switch** (`src/executor/killswitch.py`): a sentinel file **and** the
+  daily-loss trip, checked before every order.
+- **live mode is OFF.** `LiveRouter` calls the venue `place_order`, which is still
+  a stub — and even reaching it requires passing the live guard below. Real order
+  placement is the remaining live-path work, to be built only after watching
+  paper results.
 
-### How to arm / disarm (future)
+### How to arm / disarm
 
-Arming will require *all* of: launch with `--live`, set `ARMED=true`, confirmed
-funded balances on both venues, and a non-empty `mappings.yaml`. Disarm by
-removing any one gate, or instantly via the kill switch: `touch ./HALT` (the
-path in `KILL_SWITCH_FILE`) halts all new orders; deleting the file re-enables.
+Live refuses to start unless **all** hold: launch with `--live`, `ARMED=true` in
+`.env`, funded balances on both venues, and a non-empty `mappings.yaml`
+(verified live: `python -m src.executor --live` prints exactly which gate fails).
+Disarm by removing any gate, or instantly via the kill switch:
+`touch ./HALT` halts all new orders; deleting the file re-enables.
+
+Default limits are conservative (max $100 capital, 20 contracts/market,
+10/order, 2 concurrent, MAX_DAILY_LOSS $15) — tune in `.env`.
+
+## Scanner (detection only)
+
+```bash
+./.venv/bin/python -m src.scanner       # ranks fee-adjusted divergences -> candidates.yaml
+```
+
+Routes each Polymarket US family (slug prefix) to its Kalshi series and aligns by
+threshold + period; auto-flags `>` vs `≥` comparator mismatches (the #1 fake-edge
+trap). Writes UNVERIFIED suggestions only — never tradable until promoted to
+`mappings.yaml` by hand.
 
 ---
 

@@ -81,9 +81,19 @@ def create_app(db_path: str, staleness_ms: int = 2000) -> FastAPI:
             recent = [dict(r) for r in c.execute(
                 "SELECT * FROM edges WHERE closed_ts IS NOT NULL "
                 "ORDER BY closed_ts DESC LIMIT 50")]
+            pnl = [dict(r) for r in c.execute(
+                "SELECT date, realized, fees, kill_switch_tripped FROM pnl_daily "
+                "ORDER BY date DESC LIMIT 14")]
+            positions = [dict(r) for r in c.execute(
+                "SELECT venue, market_id, net_qty FROM positions WHERE net_qty != 0 "
+                "ORDER BY venue, market_id")]
+            fills = [dict(r) for r in c.execute(
+                "SELECT pair_id, venue, outcome, price, qty, fee, ts FROM paper_fills "
+                "ORDER BY id DESC LIMIT 20")]
             return JSONResponse({
                 "now": now, "db": db_path, "staleness_ms": staleness_ms,
                 "pairs": pairs, "open_edges": open_edges, "recent_edges": recent,
+                "pnl": pnl, "positions": positions, "paper_fills": fills,
             })
         finally:
             c.close()
@@ -154,6 +164,13 @@ small{color:var(--mut)}
   <section><h2>Live opportunities &mdash; net of fees (open)</h2><div id="open"></div></section>
   <section><h2>Mapped pairs &mdash; live quotes &amp; gross (pre-fee) edge</h2><div id="pairs"></div></section>
   <section><h2>Recent opportunities &mdash; persistence timing</h2><div id="recent"></div></section>
+  <section><h2>Paper PnL &mdash; net of real fees (Phase 2)</h2><div id="pnl"></div></section>
+  <section><h2>Positions &amp; recent paper fills</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <div id="positions" style="border-right:1px solid var(--line)"></div>
+      <div id="fills"></div>
+    </div>
+  </section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -175,11 +192,14 @@ async function tick(){
   let s; try{ s=await (await fetch('/api/state')).json(); }catch(e){ return; }
   const openN=s.open_edges.length, pairsN=s.pairs.length;
   const fresh=s.pairs.filter(p=>p.kalshi&&!p.kalshi.stale&&p.polyus&&!p.polyus.stale).length;
+  const usd0=x=>(x<0?'-$':'$')+Math.abs(Number(x)).toFixed(2);
+  const todayPnl=(s.pnl&&s.pnl.length)?s.pnl[0].realized:null;
   $('chips').innerHTML=
     '<span class="chip"><span class="dot" style="background:'+(openN?'var(--grn)':'var(--mut)')+'"></span>'
     +'<b>'+openN+'</b> live</span>'
     +'<span class="chip"><b>'+pairsN+'</b> pairs</span>'
     +'<span class="chip"><b>'+fresh+'</b> both-feeds fresh</span>'
+    +(todayPnl!=null?'<span class="chip"><b class="'+cls(todayPnl)+'">'+usd0(todayPnl)+'</b> paper PnL</span>':'')
     +'<span class="chip mono">'+new Date(s.now*1000).toLocaleTimeString()+'</span>';
 
   $('open').innerHTML=table(
@@ -205,6 +225,26 @@ async function tick(){
       +'</td><td class="'+cls(e.peak_taker_edge)+'">'+pct(e.peak_taker_edge)+'</td><td class="mono">'
       +e.size_available+'</td><td class="mono mut">'+(e.duration_ms/1000).toFixed(1)+'s</td></tr>'),
     'No closed opportunities recorded yet.');
+
+  const usd=x=>(x<0?'-$':'$')+Math.abs(Number(x)).toFixed(2);
+  $('pnl').innerHTML=table(
+    ['Date','Realized','Fees','Kill switch'],
+    (s.pnl||[]).map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono '+cls(p.realized)
+      +'">'+usd(p.realized)+'</td><td class="mono mut">'+usd(p.fees)+'</td><td>'
+      +(p.kill_switch_tripped?'<span class="badge b-stale">TRIPPED</span>':'<span class="mut">—</span>')
+      +'</td></tr>'),
+    'No paper PnL yet — run: python -m src.executor  (or scripts/demo_paper.py)');
+  $('positions').innerHTML='<h2 style="border:none">Open positions</h2>'+table(
+    ['Venue','Market','Net qty'],
+    (s.positions||[]).map(p=>'<tr><td>'+p.venue+'</td><td class="mono mut">'+(p.market_id||'').slice(0,26)
+      +'</td><td class="mono">'+p.net_qty+'</td></tr>'),
+    'No open positions.');
+  $('fills').innerHTML='<h2 style="border:none">Recent paper fills</h2>'+table(
+    ['Venue','Out','Qty','Px','Fee'],
+    (s.paper_fills||[]).map(f=>'<tr><td>'+f.venue+'</td><td class="mut">'+f.outcome+'</td><td class="mono">'
+      +Number(f.qty).toFixed(0)+'</td><td class="mono">'+px(f.price)+'</td><td class="mono mut">'
+      +usd(f.fee)+'</td></tr>'),
+    'No fills yet.');
 }
 tick(); setInterval(tick,1500);
 </script>

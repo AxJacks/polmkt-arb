@@ -213,6 +213,51 @@ class Store:
                 (now, dur, edge_id),
             )
 
+    # ── Phase 2: paper fills / pnl / positions ───────────────
+    def record_paper_fill(self, pair_id, venue, outcome, role, price, qty, fee, ts) -> None:
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO paper_fills (pair_id, venue, outcome, role, price, qty, fee, ts)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (pair_id, venue, outcome, role, price, qty, fee, ts),
+            )
+
+    def add_pnl(self, date: str, realized: float, fees: float) -> None:
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO pnl_daily (date, realized, fees) VALUES (?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET
+                     realized = realized + excluded.realized,
+                     fees = fees + excluded.fees""",
+                (date, realized, fees),
+            )
+
+    def get_today_realized(self, date: str) -> float:
+        row = self.conn.execute("SELECT realized FROM pnl_daily WHERE date=?", (date,)).fetchone()
+        return float(row["realized"]) if row else 0.0
+
+    def mark_kill_switch(self, date: str) -> None:
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO pnl_daily (date, kill_switch_tripped) VALUES (?,1)
+                   ON CONFLICT(date) DO UPDATE SET kill_switch_tripped=1""",
+                (date,),
+            )
+
+    def upsert_position(self, venue: str, market_id: str, dqty: float, price: float, ts: float) -> None:
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO positions (venue, market_id, net_qty, avg_price, updated_ts)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(venue, market_id) DO UPDATE SET
+                     net_qty = net_qty + excluded.net_qty, updated_ts=excluded.updated_ts""",
+                (venue, market_id, dqty, price, ts),
+            )
+
+    def positions(self) -> dict[tuple[str, str], float]:
+        rows = self.conn.execute("SELECT venue, market_id, net_qty FROM positions").fetchall()
+        return {(r["venue"], r["market_id"]): float(r["net_qty"]) for r in rows}
+
     # ── candidates ───────────────────────────────────────────
     def record_candidate(self, c_dict: dict) -> None:
         with self._tx() as c:

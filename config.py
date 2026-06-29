@@ -89,11 +89,11 @@ class Config:
     # ── Phase 2 executor (gated; unused in Phase 1) ─────────
     armed: bool = field(default_factory=lambda: _b("ARMED", False))
     mode: str = field(default_factory=lambda: _s("MODE", "paper"))
-    max_contracts_per_market: int = field(default_factory=lambda: _i("MAX_CONTRACTS_PER_MARKET", 100))
-    max_total_capital: float = field(default_factory=lambda: _f("MAX_TOTAL_CAPITAL", 1000))
-    max_concurrent_arbs: int = field(default_factory=lambda: _i("MAX_CONCURRENT_ARBS", 3))
-    max_order_size: int = field(default_factory=lambda: _i("MAX_ORDER_SIZE", 50))
-    max_daily_loss: float = field(default_factory=lambda: _f("MAX_DAILY_LOSS", 50))
+    max_contracts_per_market: int = field(default_factory=lambda: _i("MAX_CONTRACTS_PER_MARKET", 20))
+    max_total_capital: float = field(default_factory=lambda: _f("MAX_TOTAL_CAPITAL", 100))
+    max_concurrent_arbs: int = field(default_factory=lambda: _i("MAX_CONCURRENT_ARBS", 2))
+    max_order_size: int = field(default_factory=lambda: _i("MAX_ORDER_SIZE", 10))
+    max_daily_loss: float = field(default_factory=lambda: _f("MAX_DAILY_LOSS", 15))
     leg2_timeout_ms: int = field(default_factory=lambda: _i("LEG2_TIMEOUT_MS", 1500))
     kill_switch_file: str = field(default_factory=lambda: _s("KILL_SWITCH_FILE", "./HALT"))
 

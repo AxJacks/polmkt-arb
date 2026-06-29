@@ -100,6 +100,16 @@ class PolyUSClient(VenueClient):
         # Single schedule across categories (verified at docs.polymarket.us/fees).
         return PolyUSFeeModel()
 
+    # ── account (read-only; safe in Phase 1/2 paper) ─────────
+    def get_balance(self) -> float:
+        """USD buying power in dollars."""
+        data = self._get("/account/balances")
+        balances = data.get("balances", [])
+        if not balances:
+            return 0.0
+        b = balances[0]
+        return float(b.get("buyingPower", b.get("currentBalance", 0)))
+
     # ── feed ─────────────────────────────────────────────────
     async def stream_books(
         self,
