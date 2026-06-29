@@ -51,6 +51,17 @@ def test_actionable_gate():
     assert not is_actionable(res.best, min_edge=0.01, min_size=100, slippage_buffer=0.005)
 
 
+def test_implausible_edge_is_not_actionable():
+    # Venues disagree on who's favored (kalshi A=0.18, poly A=0.83) -> a huge
+    # "edge" that's a data error, not arbitrage. The max_edge cap must reject it.
+    kalshi = VenueBook(0.16, 0.18, 0.82, 0.84, 100, 100, 100, 100, 0.0)
+    poly = VenueBook(0.82, 0.83, 0.17, 0.18, 100, 100, 100, 100, 0.0)
+    res = compute_edges("p", kalshi, KalshiFeeModel(0.07, 0.0), False, poly, PolyUSFeeModel(), False)
+    assert res.best.taker_edge > 0.5                                   # looks huge
+    assert not is_actionable(res.best, 0.02, 10, 0.005, max_edge=0.10)  # capped out
+    assert is_actionable(res.best, 0.02, 10, 0.005, max_edge=1.0)       # would pass uncapped
+
+
 def test_boundary_prices_do_not_raise():
     # Live books can show asks/bids at exactly 0.00 or 1.00 (illiquid strikes).
     # Fees are undefined there, but edge calc must degrade gracefully, not raise.

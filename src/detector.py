@@ -75,7 +75,8 @@ def evaluate_pair(
         kb, kalshi_fee, pair.kalshi.invert,
         pb, polyus_fee, pair.polyus.invert,
     )
-    actionable = is_actionable(res.best, cfg.min_edge, cfg.min_size, cfg.slippage_buffer)
+    actionable = is_actionable(res.best, cfg.min_edge, cfg.min_size, cfg.slippage_buffer,
+                               getattr(cfg, "max_plausible_edge", 1.0))
     return res, actionable
 
 
@@ -86,16 +87,20 @@ class OpportunityTracker:
         self.store = store
         self._open: dict[tuple[str, str], int] = {}
 
-    def on_eval(self, pair_id: str, res: EdgeResult, actionable: bool, cfg, now: float) -> None:
+    def on_eval(self, pair_id: str, res: EdgeResult, actionable: bool, cfg, now: float) -> bool:
+        """Returns True only when a NEW opportunity opens (so callers alert once,
+        not every poll)."""
         key = (pair_id, res.best.structure)
         edge_id = self._open.get(key)
         if actionable and edge_id is None:
             self._open[key] = self.store.open_edge(pair_id, res.best, cfg.slippage_buffer, now)
+            return True
         elif actionable and edge_id is not None:
             self.store.bump_edge(edge_id, res.best.taker_edge, res.best.taker_size)
         elif not actionable and edge_id is not None:
             self.store.close_edge(edge_id, now)
             del self._open[key]
+        return False
 
 
 class Detector:
@@ -109,6 +114,7 @@ class Detector:
         self.tracker = OpportunityTracker(self.store)
         self.pairs: list[MappedPair] = []
         self._fees: dict[str, tuple] = {}  # pair_id -> (kalshi_fee, polyus_fee)
+        self._last_alert: dict[tuple, float] = {}  # (pair_id, structure) -> last alert ts
 
     def load(self) -> None:
         if self.sports_league:
@@ -151,12 +157,17 @@ class Detector:
                 log.debug("skip %s: %s", out.pair_id, out.reason)
                 continue
             res, actionable = out
-            self.tracker.on_eval(pair.id, res, actionable, self.cfg, now)
+            opened = self.tracker.on_eval(pair.id, res, actionable, self.cfg, now)
             log.debug("pair %s best=%s taker_edge=%.4f size=%.0f actionable=%s",
                       pair.id, res.best.structure, res.best.taker_edge,
                       res.best.taker_size, actionable)
-            if actionable:
-                emit_alert(self.cfg, now, pair.id, res.best, self.cfg.slippage_buffer)
+            # alert once per opportunity (on open), throttled per pair
+            if actionable and opened:
+                key = (pair.id, res.best.structure)
+                cooldown = getattr(self.cfg, "alert_cooldown_s", 900)
+                if now - self._last_alert.get(key, 0) >= cooldown:
+                    self._last_alert[key] = now
+                    emit_alert(self.cfg, now, pair.id, res.best, self.cfg.slippage_buffer)
 
     def _on_book(self, venue: str):
         # map venue market_id -> pair_id

@@ -100,7 +100,8 @@ class Executor:
             return None
 
         res = compute_edges(pair.id, kbook, kfee, k_inv, pbook, pfee, p_inv)
-        if not is_actionable(res.best, self.cfg.min_edge, self.cfg.min_size, self.cfg.slippage_buffer):
+        if not is_actionable(res.best, self.cfg.min_edge, self.cfg.min_size,
+                             self.cfg.slippage_buffer, getattr(self.cfg, "max_plausible_edge", 1.0)):
             return None
 
         size = int(min(res.best.taker_size, self.limits.max_order_size))

@@ -144,6 +144,10 @@ def compute_edges(
 
 
 def is_actionable(structure: StructureResult, min_edge: float, min_size: int,
-                  slippage_buffer: float) -> bool:
-    """Taker-now gate: edge net of the slippage buffer clears MIN_EDGE at size."""
-    return (structure.taker_edge - slippage_buffer) >= min_edge and structure.taker_size >= min_size
+                  slippage_buffer: float, max_edge: float = 1.0) -> bool:
+    """Taker-now gate: edge net of the slippage buffer clears MIN_EDGE at size,
+    AND is not implausibly large. A genuine cross-venue arb is bounded by fees +
+    a few points; an edge above `max_edge` means the two markets disagree on
+    reality (stale/inverted odds, or a bad auto-match) — never free money."""
+    net = structure.taker_edge - slippage_buffer
+    return min_edge <= net <= max_edge and structure.taker_size >= min_size
