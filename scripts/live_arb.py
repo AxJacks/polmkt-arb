@@ -157,15 +157,17 @@ def halted():
 
 
 def execute(mt, p1_ask, k2_ask, k2_bid):
+    """All $ figures are computed from ACTUAL balance deltas (truth), not order-
+    response estimates, so the alerts are exact."""
     global deployed, realized, locked
     done.add(mt["slug"])   # one attempt per match — no double-up / rapid-fire
+    tot0 = kc.get_balance() + pc.get_balance()   # total cash before
     print("  >> KALSHI buy 1 %s YES @ %.2f (P2=%s) ..." % (mt["k2"], k2_ask, mt["p2"][:16]))
     kr = kc.place_order(mt["k2"], "bid", 1, k2_ask)
     if float(kr.get("fill_count", "0") or 0) < 1:
         print("     kalshi IOC didn't fill — aborted, no position."); return
-    kprice = float(kr.get("average_fill_price", k2_ask)); kfeepaid = float(kr.get("average_fee_paid", 0))
-    deployed += kprice
-    print("     filled @ %.3f fee %.3f" % (kprice, kfeepaid))
+    kprice = float(kr.get("average_fill_price", k2_ask))
+    print("     filled @ %.3f" % kprice)
     print("  >> POLY buy 1 %s YES @ %.2f (P1=%s) ..." % (mt["slug"], p1_ask, mt["p1"][:16]))
     pc.place_order(mt["slug"], "OUTCOME_SIDE_YES", "ORDER_ACTION_BUY", 1, p1_ask)
     t0, filled = time.time(), False
@@ -176,17 +178,17 @@ def execute(mt, p1_ask, k2_ask, k2_bid):
         time.sleep(0.4)
     tag = "%s vs %s" % (mt["p1"], mt["p2"])
     if filled:
-        deployed += p1_ask
-        lk = 1.0 - (kprice + p1_ask) - kfeepaid - PFEE.taker_fee(p1_ask, 1)
+        spent = tot0 - (kc.get_balance() + pc.get_balance())   # actual cash deployed
+        deployed += spent
+        lk = 1.0 - spent                                       # $1 payout at settlement − cost
         locked += lk
         msg = ("✅ HEDGE PLACED — %s\nbought %s @Kalshi %.2f, %s @Poly %.2f\n"
-               "LOCKED +$%.2f (settles at match end)\nrunning: %s"
-               % (tag, mt["p2"][:14], kprice, mt["p1"][:14], p1_ask, lk, running()))
-        print("     ✅ LOCKED +$%.3f" % lk); notify.send(msg)
+               "cost $%.2f → LOCKED +$%.2f (settles at match end)\nrunning: %s"
+               % (tag, mt["p2"][:14], kprice, mt["p1"][:14], p1_ask, spent, lk, running()))
+        print("     ✅ LOCKED +$%.3f (cost $%.3f)" % (lk, spent)); notify.send(msg)
     else:
-        ur = kc.place_order(mt["k2"], "ask", 1, k2_bid)
-        deployed -= kprice
-        loss = (float(ur.get("average_fill_price", k2_bid)) - kprice) - kfeepaid - float(ur.get("average_fee_paid", 0))
+        kc.place_order(mt["k2"], "ask", 1, k2_bid)             # unwind the naked Kalshi leg
+        loss = (kc.get_balance() + pc.get_balance()) - tot0    # actual realized cash change (<0)
         realized += loss
         msg = ("⚠️ MISSED HEDGE — %s\nPoly leg didn't fill in %.0fs; unwound Kalshi\n"
                "realized $%.2f\nrunning: %s" % (tag, args.leg2_timeout, loss, running()))
