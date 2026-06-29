@@ -195,6 +195,116 @@ def scan(cfg, kalshi_client, polyus_client, top=40):
     return results
 
 
+# ── Sports routing (no-draw moneyline only) ──────────────────────
+# Poly moneyline = one market, outcomes [team1, team2]. Kalshi KXMLBGAME = two
+# markets/game (one YES per team). We match by team-set + game start (same teams
+# play multi-game series). Only NO-DRAW sports are valid for the binary hedge
+# (buy team1 on one venue + team2 on the other covers all outcomes). Soccer/draws
+# are excluded.
+_MON3 = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
+         "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+# Poly slug code (upper) -> Kalshi team code, where they differ.
+_MLB_ALIAS = {"WhiteSox": "CWS"}
+
+SPORTS_ROUTES = {  # league -> (poly slug prefix+league, kalshi game series)
+    "mlb": ("aec-mlb-", "KXMLBGAME"),
+}
+
+
+def _parse_kalshi_game_dt(prefix: str):
+    import re as _re
+    from datetime import datetime, timedelta, timezone
+    m = _re.search(r"-(\d{2})([a-z]{3})(\d{2})(\d{2})(\d{2})", prefix.lower())
+    if not m:
+        return None
+    yy, mon, dd, hh, mm = m.groups()
+    if mon not in _MON3:
+        return None
+    # Kalshi ticker time is US Eastern; +4h ≈ EDT -> UTC (window match tolerates DST).
+    naive = datetime(2000 + int(yy), _MON3[mon], int(dd), int(hh), int(mm))
+    return naive.replace(tzinfo=timezone.utc) + timedelta(hours=4)
+
+
+def _parse_iso(s: str):
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        return None
+
+
+def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
+    from datetime import timezone
+    kc, pc = kalshi_client, polyus_client
+    poly_prefix, k_series = SPORTS_ROUTES[league]
+
+    # Poly moneyline (no-draw) markets for the league
+    poly, off = [], 0
+    while off < 8000:
+        b = pc._get("/markets", {"active": "true", "closed": "false",
+                                 "categories": "sports", "limit": 500, "offset": off}).get("markets", [])
+        if not b:
+            break
+        poly += [m for m in b if m["slug"].startswith(poly_prefix)
+                 and m.get("sportsMarketTypeV2") == "SPORTS_MARKET_TYPE_MONEYLINE"]
+        off += 500
+
+    # Kalshi per-team game markets, grouped by game
+    km = kc._get("/markets", {"series_ticker": k_series, "status": "open", "limit": 1000}).get("markets", [])
+    games = {}
+    for m in km:
+        pref = m["ticker"].rsplit("-", 1)[0]
+        code = m["ticker"].rsplit("-", 1)[1].upper()
+        games.setdefault(pref, {"dt": _parse_kalshi_game_dt(pref), "teams": {}})["teams"][code] = m
+    # index by team-set
+    by_set = {}
+    for pref, g in games.items():
+        by_set.setdefault(frozenset(g["teams"]), []).append(g)
+
+    pfee = PolyUSFeeModel()
+    fee_cache = {}
+    results = []
+    for pm in poly:
+        parts = pm["slug"][len(poly_prefix):].split("-")
+        if len(parts) < 3:
+            continue
+        c1, c2 = parts[0].upper(), parts[1].upper()
+        c1, c2 = _MLB_ALIAS.get(c1, c1), _MLB_ALIAS.get(c2, c2)
+        cand = by_set.get(frozenset({c1, c2}))
+        if not cand:
+            continue
+        pstart = _parse_iso(pm.get("gameStartTime"))
+        g = None
+        for cg in cand:
+            if cg["dt"] and pstart and abs((cg["dt"] - pstart).total_seconds()) <= window_h * 3600:
+                g = cg
+                break
+        if g is None or c1 not in g["teams"]:
+            continue
+        # A = team1 (c1) wins
+        km1 = g["teams"][c1]
+        kb = _kalshi_book(km1)               # Kalshi YES = c1 wins; NO = c2 (no draw)
+        if kb is None:
+            continue
+        try:
+            pb = _poly_book(pc._get(f"/markets/{pm['slug']}/bbo"))  # YES = outcome[0] = c1
+        except Exception:
+            pb = None
+        if pb is None:
+            continue
+        st = km1.get("series_ticker") or k_series
+        if st not in fee_cache:
+            try:
+                fee_cache[st] = kc.get_fee_model(km1["ticker"])
+            except Exception:
+                fee_cache[st] = KalshiFeeModel(0.07, 0.0175)
+        res = compute_edges(km1["ticker"], kb, fee_cache[st], False, pb, pfee, False)
+        results.append((league, km1, pm, res, c1, c2))
+    results.sort(key=lambda x: -x[3].best.taker_edge)
+    return results
+
+
 def main() -> None:
     import argparse
 
@@ -206,9 +316,37 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     ap = argparse.ArgumentParser(description="Family-routed cross-venue scanner (detection only)")
     ap.add_argument("--top", type=int, default=40)
+    ap.add_argument("--sports", action="store_true", help="scan sports moneyline (no-draw) instead of macro")
+    ap.add_argument("--league", default="mlb")
     args = ap.parse_args()
     cfg = load_config()
-    results = scan(cfg, KalshiClient(cfg), PolyUSClient(cfg), top=args.top)
+    kc, pc = KalshiClient(cfg), PolyUSClient(cfg)
+
+    if args.sports:
+        sres = scan_sports(cfg, kc, pc, league=args.league)
+        print(f"\n=== {args.league.upper()} MONEYLINE apparent edges (UNVERIFIED — no-draw hedge) ===")
+        print(f"{'taker':>7} {'maker':>7}  {'A=team1':9} {'Kalshi(team1)':28} {'Poly game':30} {'sz':>4}")
+        ssh = []
+        for league, km1, pm, res, c1, c2 in sres[:args.top]:
+            e = res.best
+            flag = "  <-- EDGE (verify)" if e.taker_edge > 0 else ""
+            print(f"{e.taker_edge*100:6.1f}% {e.maker_edge*100:6.1f}%  {c1+' v '+c2:9} "
+                  f"{km1['ticker'][:28]:28} {pm['slug'][:30]:30} {e.taker_size:4.0f}{flag}")
+            if e.taker_edge > 0:
+                ssh.append({
+                    "kalshi_ticker": km1["ticker"], "polyus_slug": pm["slug"], "confidence": 0.5,
+                    "title_kalshi": km1.get("title"), "title_polyus": pm.get("question"),
+                    "differing_fields": [f"taker_edge={e.taker_edge*100:.1f}% ({c1} wins; no-draw moneyline)",
+                                         "VERIFY: same game/date, postponement/suspension & extra-innings void rules",
+                                         "assumes Poly BBO is outcome[0]=team1 — confirm"],
+                    "model": "scanner-sports-mlb"})
+        print(f"\n{len(sres)} matched games; {len(ssh)} with positive apparent edge.")
+        if ssh:
+            write_candidates(cfg.candidates_path, ssh)
+            print(f"Wrote {len(ssh)} UNVERIFIED sports candidates to {cfg.candidates_path}")
+        return
+
+    results = scan(cfg, kc, pc, top=args.top)
 
     print("\n=== APPARENT EDGES across routed families (UNVERIFIED — verify before trading) ===")
     print(f"{'taker':>7} {'maker':>7}  {'fam':5} {'cmp':>7} {'Kalshi':22} {'Poly US':38} {'K_sz':>5}")
