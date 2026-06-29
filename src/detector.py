@@ -123,14 +123,17 @@ class Detector:
         self.store.purge_implausible_edges(getattr(self.cfg, "max_plausible_edge", 1.0))
         if self.sports_league:
             # DETECTION ONLY: auto-matched, UNVERIFIED pairs. Never tradable.
-            from .scanner import ALL_SPORTS, build_macro_pairs, build_sports_pairs
+            from .scanner import (ALL_SPORTS, build_futures_pairs,
+                                   build_macro_pairs, build_sports_pairs)
             toks = [x.strip() for x in self.sports_league.strip().lower().split(",") if x.strip()]
-            sport, macro = set(), False
+            sport, macro, futures = set(), False, False
             for t in toks:
                 if t == "all":
                     sport |= set(ALL_SPORTS)
                 elif t == "macro":
                     macro = True
+                elif t == "futures":
+                    futures = True
                 elif t in ALL_SPORTS:
                     sport.add(t)
             self.pairs = []
@@ -138,6 +141,8 @@ class Detector:
                 self.pairs += build_sports_pairs(self.cfg, self.kalshi, self.polyus, sorted(sport))
             if macro:
                 self.pairs += build_macro_pairs(self.cfg, self.kalshi, self.polyus)
+            if futures:
+                self.pairs += build_futures_pairs(self.cfg, self.kalshi, self.polyus)
             removed = self.store.prune_pairs([p.id for p in self.pairs])
             log.warning("WATCH mode (%s): %d auto-matched pairs (UNVERIFIED — detection only); pruned %d finished",
                         ",".join(toks), len(self.pairs), removed)

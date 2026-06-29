@@ -492,6 +492,65 @@ def build_macro_pairs(cfg, kalshi_client, polyus_client):
     return pairs
 
 
+# Poly 3-letter football code -> Kalshi country code (Kalshi mixes 2- and 3-letter).
+_WC_CODE_MAP = {
+    "ALG": "DZA", "ARG": "AR", "AUS": "AU", "AUT": "AT", "BEL": "BE", "BIH": "BIH",
+    "BRA": "BR", "CAN": "CA", "CIV": "CIV", "COD": "COD", "COL": "CO", "CPV": "CPV",
+    "CRO": "HR", "ECU": "EC", "EGY": "EGY", "ENG": "GB", "ESP": "ES", "FRA": "FR",
+    "GER": "DE", "GHA": "GH", "JPN": "JP", "MAR": "MA", "MEX": "MX", "NED": "NL",
+    "NOR": "NO", "PAR": "PY", "POR": "PT", "SEN": "SN", "SUI": "CH", "SWE": "SE",
+    "USA": "US",
+}
+
+# Binary "entity wins championship" futures: one Yes/No market per entity on each
+# venue. (name: poly_prefix, code_marker, kalshi_series, label, code_map)
+FUTURES_ROUTES = {
+    "wc": ("tec-f-wc-", "winner-", "KXMENWORLDCUP", "World Cup", _WC_CODE_MAP),
+}
+
+
+def build_futures_pairs(cfg, kalshi_client, polyus_client):
+    """Auto-build binary championship-winner pairs (e.g. World Cup winner by
+    country) for live watching. DETECTION ONLY — unverified, never tradable.
+    A = 'entity wins'; both venues have one Yes/No market per entity."""
+    from .mapping import MappedPair, VenueLeg
+    kc, pc = kalshi_client, polyus_client
+    poly, off = [], 0
+    while off < 12000:
+        b = pc._get("/markets", {"active": "true", "closed": "false",
+                                 "limit": 500, "offset": off}).get("markets", [])
+        if not b:
+            break
+        poly += b
+        off += 500
+    pairs = []
+    for name, (pre, marker, series, label, code_map) in FUTURES_ROUTES.items():
+        pmkts = [m for m in poly if (m.get("slug") or "").startswith(pre) and marker in (m.get("slug") or "")]
+        km = kc._get("/markets", {"series_ticker": series, "status": "open", "limit": 1000}).get("markets", [])
+        kidx = {m["ticker"].rsplit("-", 1)[1].upper(): m for m in km}
+        for pm in pmkts:
+            code = pm["slug"].split(marker)[-1].upper()
+            code = code_map.get(code, code)
+            kmk = kidx.get(code)
+            if not kmk:
+                continue
+            outs = _outcomes(pm)
+            if "Yes" not in outs:
+                continue
+            poly_invert = outs.index("Yes") != 0   # A = 'Yes' (entity wins); align Poly book side
+            entity = kmk.get("yes_sub_title") or code
+            settle = _parse_iso(kmk.get("expected_expiration_time")) or _parse_iso(kmk.get("close_time"))
+            if settle is None:
+                continue
+            ymeans = f"{entity} wins {label}"
+            pairs.append(MappedPair(
+                id=f"{name.upper()} {entity[:16]}",
+                kalshi=VenueLeg(kmk["ticker"], ymeans, "official", settle, "binary; UNVERIFIED auto-match", False),
+                polyus=VenueLeg(pm["slug"], ymeans, "official", settle, "binary; UNVERIFIED auto-match", poly_invert),
+                verified_by="AUTO-SCANNER (unverified)", verified_at="auto", enabled=True))
+    return pairs
+
+
 def main() -> None:
     import argparse
 

@@ -50,7 +50,7 @@ WantedBy=multi-user.target
 UNIT
 }
 
-gen polmkt-detector "polmkt-arb detector (sports + macro, paper detection)" "-m src.detector --sports all,macro --log-level INFO"
+gen polmkt-detector "polmkt-arb detector (sports + macro + futures, paper detection)" "-m src.detector --sports all,macro,futures --log-level INFO"
 gen polmkt-bot      "polmkt-arb Telegram control bot (/status /halt …)"            "-m src.notify listen"
 gen polmkt-dashboard "polmkt-arb dashboard (token-gated, public:8787)"             "-m src.dashboard --db $DIR/arb.db --host 0.0.0.0 --port 8787"
 
