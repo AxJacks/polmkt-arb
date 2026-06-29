@@ -113,11 +113,13 @@ class Detector:
     def load(self) -> None:
         if self.sports_league:
             # DETECTION ONLY: auto-matched, UNVERIFIED sports games. Never tradable.
-            from .scanner import build_sports_pairs
-            self.pairs = build_sports_pairs(self.cfg, self.kalshi, self.polyus, self.sports_league)
+            from .scanner import ALL_SPORTS, build_sports_pairs
+            spec = self.sports_league.strip().lower()
+            leagues = ALL_SPORTS if spec == "all" else [x.strip() for x in spec.split(",") if x.strip()]
+            self.pairs = build_sports_pairs(self.cfg, self.kalshi, self.polyus, leagues)
             removed = self.store.prune_pairs([p.id for p in self.pairs])
-            log.warning("SPORTS watch mode: %d auto-matched %s games (UNVERIFIED — detection only); pruned %d finished",
-                        len(self.pairs), self.sports_league.upper(), removed)
+            log.warning("SPORTS watch mode (%s): %d auto-matched games (UNVERIFIED — detection only); pruned %d finished",
+                        ",".join(leagues), len(self.pairs), removed)
         else:
             self.pairs = [p for p in load_mappings(self.cfg.mappings_path)]
             log.info("loaded %d verified mapped pairs", len(self.pairs))
@@ -205,8 +207,9 @@ def main() -> None:
 
     ap = argparse.ArgumentParser(description="Phase 1 cross-venue arb detector (no trading)")
     ap.add_argument("--log-level", default="INFO")
-    ap.add_argument("--sports", metavar="LEAGUE", default=None,
-                    help="watch live no-draw sports (e.g. mlb) instead of mappings.yaml (detection only)")
+    ap.add_argument("--sports", metavar="LEAGUES", default=None,
+                    help="watch live no-draw sports instead of mappings.yaml (detection only). "
+                         "Comma list (e.g. mlb,atp,wta,ufc) or 'all'.")
     args = ap.parse_args()
 
     cfg = load_config()

@@ -50,9 +50,9 @@ WantedBy=multi-user.target
 UNIT
 }
 
-gen polmkt-detector "polmkt-arb sports detector (paper detection, Telegram alerts)" "-m src.detector --sports mlb --log-level INFO"
+gen polmkt-detector "polmkt-arb sports detector (paper detection, Telegram alerts)" "-m src.detector --sports all --log-level INFO"
 gen polmkt-bot      "polmkt-arb Telegram control bot (/status /halt …)"            "-m src.notify listen"
-gen polmkt-dashboard "polmkt-arb dashboard (localhost:8787, view via SSH tunnel)"  "-m src.dashboard --db $DIR/arb.db --host 127.0.0.1 --port 8787"
+gen polmkt-dashboard "polmkt-arb dashboard (token-gated, public:8787)"             "-m src.dashboard --db $DIR/arb.db --host 0.0.0.0 --port 8787"
 
 # nightly daily-summary (oneshot + timer)
 cat > /etc/systemd/system/polmkt-daily.service <<UNIT

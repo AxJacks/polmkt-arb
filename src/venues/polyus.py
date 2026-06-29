@@ -130,13 +130,14 @@ class PolyUSClient(VenueClient):
                     self.cfg.polyus_ws_url, additional_headers=headers,
                     ping_interval=20, ping_timeout=20,
                 ) as ws:
-                    await ws.send(json.dumps({
-                        "subscribe": {
-                            "requestId": "md-sub-1",
-                            "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA",
-                            "marketSlugs": market_ids,
-                        }
-                    }))
+                    for i in range(0, len(market_ids), 100):  # max 100 markets/subscription
+                        await ws.send(json.dumps({
+                            "subscribe": {
+                                "requestId": f"md-sub-{i // 100}",
+                                "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA",
+                                "marketSlugs": market_ids[i:i + 100],
+                            }
+                        }))
                     backoff = 1.0
                     async for raw in ws:
                         m = json.loads(raw)

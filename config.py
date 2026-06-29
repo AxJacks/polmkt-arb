@@ -85,6 +85,10 @@ class Config:
     telegram_chat_id: str = field(default_factory=lambda: _s("TELEGRAM_CHAT_ID"))
     telegram_alert_edges: bool = field(default_factory=lambda: _b("TELEGRAM_ALERT_EDGES", False))
 
+    # ── Dashboard (public access via token) ─────────────────
+    dashboard_token: str = field(default_factory=lambda: _s("DASHBOARD_TOKEN"))
+    dashboard_public_url: str = field(default_factory=lambda: _s("DASHBOARD_PUBLIC_URL"))
+
     # ── Files ───────────────────────────────────────────────
     db_path: str = field(default_factory=lambda: _s("DB_PATH", "./arb.db"))
     log_path: str = field(default_factory=lambda: _s("LOG_PATH", "./arb.log"))

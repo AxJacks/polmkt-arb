@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .books import VenueBook
@@ -34,7 +34,7 @@ def _book_from_row(r) -> VenueBook:
     )
 
 
-def create_app(db_path: str, staleness_ms: int = 2000) -> FastAPI:
+def create_app(db_path: str, staleness_ms: int = 2000, token: str = "") -> FastAPI:
     app = FastAPI(title="polmkt-arb dashboard")
 
     def conn() -> sqlite3.Connection:
@@ -42,8 +42,13 @@ def create_app(db_path: str, staleness_ms: int = 2000) -> FastAPI:
         c.row_factory = sqlite3.Row
         return c
 
+    def _auth(t: str) -> None:
+        if token and t != token:
+            raise HTTPException(status_code=401, detail="missing or bad ?token=")
+
     @app.get("/api/state")
-    def state() -> JSONResponse:
+    def state(token: str = "") -> JSONResponse:
+        _auth(token)
         now = time.time()
         try:
             c = conn()
@@ -99,8 +104,9 @@ def create_app(db_path: str, staleness_ms: int = 2000) -> FastAPI:
             c.close()
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return _HTML
+    def index(token: str = "") -> str:
+        _auth(token)
+        return _HTML.replace("__TOKEN__", token)
 
     return app
 
@@ -189,7 +195,7 @@ function table(head,rows,empty){
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
 async function tick(){
-  let s; try{ s=await (await fetch('/api/state')).json(); }catch(e){ return; }
+  let s; try{ s=await (await fetch('/api/state?token=__TOKEN__')).json(); }catch(e){ return; }
   const openN=s.open_edges.length, pairsN=s.pairs.length;
   const fresh=s.pairs.filter(p=>p.kalshi&&!p.kalshi.stale&&p.polyus&&!p.polyus.stale).length;
   const usd0=x=>(x<0?'-$':'$')+Math.abs(Number(x)).toFixed(2);
@@ -261,12 +267,14 @@ def main() -> None:
     cfg = load_config()
     ap = argparse.ArgumentParser(description="polmkt-arb read-only dashboard")
     ap.add_argument("--db", default=cfg.db_path)
-    ap.add_argument("--host", default="127.0.0.1")
+    # If a token is configured, default to public bind (token-gated); else localhost.
+    ap.add_argument("--host", default="0.0.0.0" if cfg.dashboard_token else "127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
 
-    app = create_app(args.db, cfg.staleness_ms)
-    print(f"dashboard: http://{args.host}:{args.port}  (db={args.db})")
+    app = create_app(args.db, cfg.staleness_ms, token=cfg.dashboard_token)
+    gate = "token-gated (public)" if cfg.dashboard_token else "no token (localhost only)"
+    print(f"dashboard: http://{args.host}:{args.port}  (db={args.db}) [{gate}]")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

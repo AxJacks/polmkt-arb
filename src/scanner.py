@@ -195,34 +195,52 @@ def scan(cfg, kalshi_client, polyus_client, top=40):
     return results
 
 
-# ── Sports routing (no-draw moneyline only) ──────────────────────
-# Poly moneyline = one market, outcomes [team1, team2]. Kalshi KXMLBGAME = two
-# markets/game (one YES per team). We match by team-set + game start (same teams
-# play multi-game series). Only NO-DRAW sports are valid for the binary hedge
-# (buy team1 on one venue + team2 on the other covers all outcomes). Soccer/draws
-# are excluded.
+# ── Sports routing (no-draw match-winner markets) ────────────────
+# Poly moneyline = one market, outcomes [competitor1, competitor2]. Kalshi
+# KX*GAME/MATCH/FIGHT = two markets/event (one YES per competitor, full name in
+# yes_sub_title). We pair an event by competitor identity (team CODES for team
+# sports, or competitor NAMES for player sports) + start time. Only NO-DRAW
+# events make the binary hedge exhaustive; soccer/draws are excluded.
+import json as _json
+import unicodedata as _ud
+
 _MON3 = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
          "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
-# Poly slug code (upper) -> Kalshi team code, where they differ.
-_MLB_ALIAS = {"WhiteSox": "CWS"}
+_MLB_ALIAS = {"WHITESOX": "CWS"}
 
-SPORTS_ROUTES = {  # league -> (poly slug prefix+league, kalshi game series)
+# Poly slug-league -> Kalshi match-winner series. All no-draw match winners.
+SPORTS_ROUTES = {
     "mlb": ("aec-mlb-", "KXMLBGAME"),
+    "npb": ("aec-npb-", "KXNPBGAME"),
+    "kbo": ("aec-kbo-", "KXKBOGAME"),
+    "wnba": ("aec-wnba-", "KXWNBAGAME"),
+    "atp": ("aec-atp-", "KXATPMATCH"),
+    "wta": ("aec-wta-", "KXWTAMATCH"),
+    "itfme": ("aec-itfme-", "KXITFMATCH"),
+    "itfwo": ("aec-itfwo-", "KXITFWMATCH"),
+    "ufc": ("aec-ufc-", "KXUFCFIGHT"),
 }
+ALL_SPORTS = list(SPORTS_ROUTES)
 
 
 def _parse_kalshi_game_dt(prefix: str):
+    """Return (utc_datetime, has_time). Ticker date is YYMONDD with optional HHMM
+    (US Eastern). +4h ≈ EDT -> UTC; the match window tolerates DST/tz slack."""
     import re as _re
     from datetime import datetime, timedelta, timezone
     m = _re.search(r"-(\d{2})([a-z]{3})(\d{2})(\d{2})(\d{2})", prefix.lower())
+    has_time = bool(m)
     if not m:
-        return None
-    yy, mon, dd, hh, mm = m.groups()
+        m = _re.search(r"-(\d{2})([a-z]{3})(\d{2})", prefix.lower())
+    if not m:
+        return None, False
+    g = m.groups()
+    yy, mon, dd = g[0], g[1], g[2]
+    hh, mm = (g[3], g[4]) if has_time else ("12", "00")
     if mon not in _MON3:
-        return None
-    # Kalshi ticker time is US Eastern; +4h ≈ EDT -> UTC (window match tolerates DST).
+        return None, False
     naive = datetime(2000 + int(yy), _MON3[mon], int(dd), int(hh), int(mm))
-    return naive.replace(tzinfo=timezone.utc) + timedelta(hours=4)
+    return naive.replace(tzinfo=timezone.utc) + timedelta(hours=4), has_time
 
 
 def _parse_iso(s: str):
@@ -234,10 +252,37 @@ def _parse_iso(s: str):
         return None
 
 
+def _ntok(s: str) -> set:
+    s = "".join(c for c in _ud.normalize("NFKD", s or "") if not _ud.combining(c))
+    import re as _re
+    return {t for t in _re.findall(r"[a-z0-9]+", s.lower()) if len(t) > 1}
+
+
+def _names_match(a: str, b: str) -> bool:
+    ta, tb = _ntok(a), _ntok(b)
+    if not ta or not tb:
+        return False
+    inter = ta & tb
+    if not inter:
+        return False
+    return len(inter) / len(ta | tb) >= 0.5 or ta <= tb or tb <= ta
+
+
+def _outcomes(pm: dict) -> list:
+    o = pm.get("outcomes")
+    if isinstance(o, str):
+        try:
+            o = _json.loads(o)
+        except _json.JSONDecodeError:
+            o = []
+    return o if isinstance(o, list) else []
+
+
 def match_sports_games(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
-    """Pair Poly moneyline games to Kalshi per-team game markets by team-set +
-    start time. Returns list of dicts: {km1 (Kalshi team1 market), pm (Poly
-    market), c1, c2, start}. A = team1 (c1) wins. Shared by scanner + watcher."""
+    """Pair Poly moneyline events to Kalshi per-competitor markets. A = Poly
+    outcome[0]. Returns {km1 (Kalshi market for A), pm, c1 (A label), c2, start}.
+    Matches by team code-set first, then by competitor name; both gated on a
+    date window (tight when the ticker carries a time, looser for date-only)."""
     kc, pc = kalshi_client, polyus_client
     poly_prefix, k_series = SPORTS_ROUTES[league]
 
@@ -256,27 +301,69 @@ def match_sports_games(cfg, kalshi_client, polyus_client, league="mlb", window_h
     for m in km:
         pref = m["ticker"].rsplit("-", 1)[0]
         code = m["ticker"].rsplit("-", 1)[1].upper()
-        games.setdefault(pref, {"dt": _parse_kalshi_game_dt(pref), "teams": {}})["teams"][code] = m
+        if pref not in games:
+            dt, has_time = _parse_kalshi_game_dt(pref)
+            games[pref] = {"dt": dt, "has_time": has_time, "by_code": {}}
+        games[pref]["by_code"][code] = m
     by_set = {}
     for g in games.values():
-        by_set.setdefault(frozenset(g["teams"]), []).append(g)
+        by_set.setdefault(frozenset(g["by_code"]), []).append(g)
+
+    def date_ok(g, pstart):
+        if g["dt"] is None or pstart is None:
+            return False
+        win = window_h if g["has_time"] else 36
+        return abs((g["dt"] - pstart).total_seconds()) <= win * 3600
+
+    def sub(m):
+        return m.get("yes_sub_title") or ""
+
+    def km_for_A(game, outs):
+        """Within a 2-competitor game, pick the Kalshi market for A = outs[0].
+        A is ALWAYS Poly outcome[0] (matches the Poly BBO side). Choose by name;
+        if A's name is too short to match (e.g. 'A's'), take the complement of
+        the market that matches outs[1]."""
+        mkts = list(game["by_code"].values())
+        if len(mkts) != 2:
+            return None
+        mA = next((m for m in mkts if _names_match(outs[0], sub(m))), None)
+        mB = next((m for m in mkts if _names_match(outs[1], sub(m))), None)
+        if mA is None and mB is not None:
+            mA = next(m for m in mkts if m is not mB)
+        return mA
 
     matches = []
     for pm in poly:
         parts = pm["slug"][len(poly_prefix):].split("-")
-        if len(parts) < 3:
-            continue
-        c1, c2 = parts[0].upper(), parts[1].upper()
-        c1, c2 = _MLB_ALIAS.get(c1, c1), _MLB_ALIAS.get(c2, c2)
-        cand = by_set.get(frozenset({c1, c2}))
-        if not cand:
+        outs = _outcomes(pm)
+        if len(parts) < 3 or len(outs) < 2:
             continue
         pstart = _parse_iso(pm.get("gameStartTime"))
-        g = next((cg for cg in cand if cg["dt"] and pstart
-                  and abs((cg["dt"] - pstart).total_seconds()) <= window_h * 3600), None)
-        if g is None or c1 not in g["teams"]:
+
+        # Find the matched Kalshi game: team code-set first (disambiguates
+        # multi-game series by date), else competitor names.
+        game = None
+        c1c, c2c = parts[0].upper(), parts[1].upper()
+        c1c, c2c = _MLB_ALIAS.get(c1c, c1c), _MLB_ALIAS.get(c2c, c2c)
+        for g in by_set.get(frozenset({c1c, c2c}), []):
+            if date_ok(g, pstart):
+                game = g
+                break
+        if game is None:
+            for g in games.values():
+                if not date_ok(g, pstart):
+                    continue
+                mkts = list(g["by_code"].values())
+                if (any(_names_match(outs[0], sub(m)) for m in mkts)
+                        and any(_names_match(outs[1], sub(m)) for m in mkts)):
+                    game = g
+                    break
+        if game is None:
             continue
-        matches.append({"km1": g["teams"][c1], "pm": pm, "c1": c1, "c2": c2, "start": pstart})
+
+        km1 = km_for_A(game, outs)   # A = outs[0], consistent across both venues
+        if km1 is not None:
+            matches.append({"km1": km1, "pm": pm, "c1": outs[0], "c2": outs[1], "start": pstart})
     return matches
 
 
@@ -287,11 +374,11 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
     results = []
     for mt in match_sports_games(cfg, kc, pc, league, window_h):
         km1, pm, c1, c2 = mt["km1"], mt["pm"], mt["c1"], mt["c2"]
-        kb = _kalshi_book(km1)               # Kalshi YES = c1 wins; NO = c2 (no draw)
+        kb = _kalshi_book(km1)               # Kalshi YES = A wins; NO = other (no draw)
         if kb is None:
             continue
         try:
-            pb = _poly_book(pc._get(f"/markets/{pm['slug']}/bbo"))  # YES = outcome[0] = c1
+            pb = _poly_book(pc._get(f"/markets/{pm['slug']}/bbo"))  # YES = outcome[0] = A
         except Exception:
             pb = None
         if pb is None:
@@ -308,29 +395,40 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
     return results
 
 
-def build_sports_pairs(cfg, kalshi_client, polyus_client, league="mlb"):
-    """Auto-built, UNVERIFIED MappedPairs for live sports watching (detection
-    only — these never enter mappings.yaml and are never tradable by the
-    executor). settlement_time = game start + 6h (≈ end) so games aren't gated
-    out during play. A = team1 wins; both venues invert=False."""
-    from datetime import timedelta, timezone
+def _shortlabel(s: str) -> str:
+    s = str(s)
+    return s if len(s) <= 12 else (s.split()[-1] if s.split() else s[:12])
+
+
+def build_sports_pairs(cfg, kalshi_client, polyus_client, leagues="mlb"):
+    """Auto-built, UNVERIFIED MappedPairs for live sports watching across one or
+    more leagues (detection only — never enter mappings.yaml, never tradable).
+    settlement_time = start + 6h (≈ end) so events aren't gated out mid-play.
+    A = Poly outcome[0]; both venues invert=False."""
+    from datetime import timedelta
 
     from .mapping import MappedPair, VenueLeg
+    if isinstance(leagues, str):
+        leagues = [leagues]
     pairs = []
-    for mt in match_sports_games(cfg, kalshi_client, polyus_client, league):
-        km1, pm, c1, c2 = mt["km1"], mt["pm"], mt["c1"], mt["c2"]
-        end = (mt["start"] or _parse_iso(pm.get("gameStartTime"))) or _parse_kalshi_game_dt(km1["ticker"])
-        if end is None:
+    for league in leagues:
+        if league not in SPORTS_ROUTES:
             continue
-        end = end + timedelta(hours=6)
-        ymeans = f"{c1} beats {c2}"
-        pairs.append(MappedPair(
-            id=f"{league.upper()} {c1}v{c2} {(mt['start'] or end).strftime('%m-%d')}",
-            kalshi=VenueLeg(km1["ticker"], ymeans, "venue settlement", end,
-                            "no-draw; UNVERIFIED auto-match", False),
-            polyus=VenueLeg(pm["slug"], ymeans, "venue settlement", end,
-                            "no-draw; UNVERIFIED auto-match", False),
-            verified_by="AUTO-SCANNER (unverified)", verified_at="auto", enabled=True))
+        for mt in match_sports_games(cfg, kalshi_client, polyus_client, league):
+            km1, pm, c1, c2 = mt["km1"], mt["pm"], mt["c1"], mt["c2"]
+            end, _ = (mt["start"], True) if mt["start"] else _parse_kalshi_game_dt(km1["ticker"])
+            if end is None:
+                continue
+            end = end + timedelta(hours=6)
+            a, b = _shortlabel(c1), _shortlabel(c2)
+            ymeans = f"{c1} beats {c2}"
+            pairs.append(MappedPair(
+                id=f"{league.upper()} {a}v{b} {(mt['start'] or end).strftime('%m-%d')}",
+                kalshi=VenueLeg(km1["ticker"], ymeans, "venue settlement", end,
+                                "no-draw; UNVERIFIED auto-match", False),
+                polyus=VenueLeg(pm["slug"], ymeans, "venue settlement", end,
+                                "no-draw; UNVERIFIED auto-match", False),
+                verified_by="AUTO-SCANNER (unverified)", verified_at="auto", enabled=True))
     return pairs
 
 

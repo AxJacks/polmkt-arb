@@ -140,6 +140,22 @@ def _cmd_positions(cfg) -> str:
         f"{r['venue']} {r['market_id'][:24]}: {r['net_qty']:.0f}" for r in rows)
 
 
+def _cmd_dashboard(cfg) -> str:
+    url = (cfg.dashboard_public_url or "").rstrip("/")
+    if not url:
+        return "dashboard URL not set (DASHBOARD_PUBLIC_URL)."
+    link = f"{url}/?token={cfg.dashboard_token}" if cfg.dashboard_token else f"{url}/"
+    return f"📊 dashboard (token-gated):\n{link}"
+
+
+def _cmd_version(cfg) -> str:
+    from pathlib import Path
+    p = Path("VERSION")
+    if p.exists():
+        return "🏷 deployed version:\n" + p.read_text().strip()
+    return "no VERSION file (deploy via deploy/setup.sh to stamp it)."
+
+
 def listen(cfg) -> None:
     """Long-poll for commands. Only the configured chat is obeyed."""
     import time
@@ -150,9 +166,9 @@ def listen(cfg) -> None:
     if not n.enabled:
         print("Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID).")
         return
-    n.send("🤖 command bot online. /status /pnl /positions /halt /resume")
+    n.send("🤖 command bot online. /status /pnl /positions /dashboard /version /halt /resume")
     offset = None
-    HELP = "commands: /status /pnl /positions /halt /resume /help"
+    HELP = "commands: /status /pnl /positions /dashboard /version /halt /resume /help"
     while True:
         try:
             r = httpx.get(_API.format(token=cfg.telegram_bot_token, method="getUpdates"),
@@ -170,6 +186,10 @@ def listen(cfg) -> None:
                     n.send(_cmd_pnl(cfg))
                 elif text.startswith("/positions"):
                     n.send(_cmd_positions(cfg))
+                elif text.startswith("/dashboard"):
+                    n.send(_cmd_dashboard(cfg))
+                elif text.startswith("/version"):
+                    n.send(_cmd_version(cfg))
                 elif text.startswith("/halt"):
                     Path(cfg.kill_switch_file).touch()
                     n.send("🚨 HALT engaged — kill switch on. No new orders. /resume to clear.")

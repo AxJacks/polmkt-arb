@@ -159,11 +159,17 @@ class KalshiClient(VenueClient):
     _BASE_MAKER = {"quadratic": 0.0, "quadratic_with_maker_fees": 0.0175}
 
     def get_fee_model(self, market_id: str) -> KalshiFeeModel:
-        if market_id in self._fee_cache:
-            return self._fee_cache[market_id]
-        market = self._get_market(market_id)
-        series_ticker = market.get("series_ticker") or market_id.split("-", 1)[0]
-        series = self._get(f"/series/{series_ticker}").get("series", {})
+        # Cache by SERIES (the fee schedule is per series, and many markets share
+        # one) so watching hundreds of markets costs ~one call per series.
+        series_ticker = market_id.split("-", 1)[0]
+        if series_ticker in self._fee_cache:
+            return self._fee_cache[series_ticker]
+        try:
+            series = self._get(f"/series/{series_ticker}").get("series", {})
+        except Exception:
+            # fall back to resolving series via the market object
+            series_ticker = self._get_market(market_id).get("series_ticker") or series_ticker
+            series = self._get(f"/series/{series_ticker}").get("series", {})
         mult = series.get("fee_multiplier")
         ftype = series.get("fee_type")
         if mult is None:
@@ -176,7 +182,7 @@ class KalshiClient(VenueClient):
             taker_multiplier=self._BASE_TAKER[ftype] * float(mult),
             maker_multiplier=self._BASE_MAKER[ftype] * float(mult),
         )
-        self._fee_cache[market_id] = model
+        self._fee_cache[series_ticker] = model
         return model
 
     # ── account (read-only; safe in Phase 1/2 paper) ─────────
@@ -206,10 +212,12 @@ class KalshiClient(VenueClient):
                     self.cfg.kalshi_ws_url, additional_headers=headers,
                     ping_interval=20, ping_timeout=20,
                 ) as ws:
-                    await ws.send(json.dumps({
-                        "id": 1, "cmd": "subscribe",
-                        "params": {"channels": ["orderbook_delta"], "market_tickers": market_ids},
-                    }))
+                    for i in range(0, len(market_ids), 100):  # batch subscriptions
+                        await ws.send(json.dumps({
+                            "id": i // 100 + 1, "cmd": "subscribe",
+                            "params": {"channels": ["orderbook_delta"],
+                                       "market_tickers": market_ids[i:i + 100]},
+                        }))
                     backoff = 1.0  # connected cleanly; reset backoff
                     async for raw in ws:
                         m = json.loads(raw)

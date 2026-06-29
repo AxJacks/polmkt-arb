@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from src.scanner import (comparator_kalshi, comparator_poly, periods,
-                         strike, _parse_kalshi_game_dt, _parse_iso)
+                         strike, _names_match, _parse_kalshi_game_dt, _parse_iso)
 
 
 def test_strike_anchored_poly():
@@ -35,10 +35,20 @@ def test_comparator_mismatch_detection():
 
 
 def test_kalshi_game_dt_parsing():
-    # 26JUN29 19:07 ET -> +4h -> 23:07 UTC
-    dt = _parse_kalshi_game_dt("KXMLBGAME-26JUN291907NYMTOR")
-    assert dt == datetime(2026, 6, 29, 23, 7, tzinfo=timezone.utc)
-    assert _parse_kalshi_game_dt("KXMLBGAME-badformat") is None
+    # with time: 26JUN29 19:07 ET -> +4h -> 23:07 UTC
+    dt, has_time = _parse_kalshi_game_dt("KXMLBGAME-26JUN291907NYMTOR")
+    assert dt == datetime(2026, 6, 29, 23, 7, tzinfo=timezone.utc) and has_time is True
+    # date-only (tennis): no time -> noon ET, has_time False
+    dt2, has_time2 = _parse_kalshi_game_dt("KXATPMATCH-26JUN29VUKBRO")
+    assert dt2 == datetime(2026, 6, 29, 16, 0, tzinfo=timezone.utc) and has_time2 is False
+    assert _parse_kalshi_game_dt("KXMLBGAME-badformat") == (None, False)
+
+
+def test_names_match():
+    assert _names_match("Aleksandar Vukic", "Aleksandar Vukic")
+    assert _names_match("Los Angeles Dodgers", "Los Angeles D")   # subset
+    assert _names_match("Benoît Saint Denis", "Benoit Saint Denis")  # accents
+    assert not _names_match("Jannik Sinner", "Carlos Alcaraz")
 
 
 def test_iso_parse():
