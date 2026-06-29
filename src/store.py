@@ -271,35 +271,40 @@ class Store:
             cur = c.execute("DELETE FROM edges WHERE peak_taker_edge > ?", (max_edge,))
             return cur.rowcount
 
-    def edge_stats(self, since_ts: float) -> dict:
-        """Summarize detected (actionable, plausible) edges since since_ts — the
-        empirical answer to 'is there a real, capturable arb?'. Persistence is
-        the tell: fleeting edges may be real-but-hard-to-catch; edges that linger
-        for minutes are almost always venue disagreements, not free money."""
+    def edge_stats(self, since_ts: float, capture_cap: float = 10) -> dict:
+        """Summarize detected edges since since_ts — the empirical 'is there a
+        real, capturable arb?' readout. A REAL arb is fleeting (gone in seconds)
+        and never persists. So the signal is 'real-shaped' edges: lived <=5s AND
+        on a market that does NOT also show a long-lived (>5min) gap (a market
+        with a persistent gap is disagreeing, not arbable — its brief dips are
+        flicker, not opportunity). Hypothetical $ is capped at capture_cap
+        contracts (what you'd actually trade), not the venue's full deep-book
+        size — so it reflects real capturable money, not fantasy liquidity."""
         rows = self.conn.execute(
             "SELECT pair_id, peak_taker_edge, size_available, closed_ts, duration_ms "
             "FROM edges WHERE opened_ts >= ?", (since_ts,)).fetchall()
         n = len(rows)
         if n == 0:
-            return {"n": 0, "markets": 0, "open_now": 0, "catchable": 0, "catch_markets": 0,
-                    "persistent": 0, "median_ms": 0.0, "max_edge": 0.0, "hyp_profit": 0.0, "top": []}
+            return {"n": 0, "markets": 0, "open_now": 0, "real_shaped": 0, "real_markets": 0,
+                    "persistent": 0, "median_ms": 0.0, "max_edge": 0.0, "hyp_profit": 0.0,
+                    "capture_cap": capture_cap, "top": []}
+        from collections import Counter
         durs = sorted(r["duration_ms"] for r in rows if r["duration_ms"] is not None)
         open_now = sum(1 for r in rows if r["closed_ts"] is None)
-        # "catchable" proxy: lived 1s–30s (long enough to act, short enough to be real)
-        catchable = sum(1 for r in rows if r["duration_ms"] is not None and 1000 <= r["duration_ms"] <= 30000)
-        persistent = sum(1 for r in rows if r["duration_ms"] is not None and r["duration_ms"] > 30000)
+        persistent_pairs = {r["pair_id"] for r in rows
+                            if r["duration_ms"] is not None and r["duration_ms"] > 300_000}
+        persistent = sum(1 for r in rows if r["duration_ms"] is not None and r["duration_ms"] > 300_000)
+        real = [r for r in rows if r["duration_ms"] is not None and r["duration_ms"] <= 5000
+                and r["pair_id"] not in persistent_pairs]
         median_ms = durs[len(durs) // 2] if durs else 0.0
         max_edge = max(r["peak_taker_edge"] for r in rows)
-        hyp = sum((r["peak_taker_edge"] or 0) * (r["size_available"] or 0) for r in rows)
-        from collections import Counter
-        top = Counter(r["pair_id"] for r in rows).most_common(5)
-        markets = len(set(r["pair_id"] for r in rows))
-        catch_markets = len(set(r["pair_id"] for r in rows
-                                if r["duration_ms"] is not None and 1000 <= r["duration_ms"] <= 30000))
-        return {"n": n, "markets": markets, "open_now": open_now, "catchable": catchable,
-                "catch_markets": catch_markets, "persistent": persistent,
-                "median_ms": float(median_ms), "max_edge": float(max_edge),
-                "hyp_profit": float(hyp), "top": top}
+        # realistic capturable $: only real-shaped edges, size capped at what you'd trade
+        hyp = sum((r["peak_taker_edge"] or 0) * min(r["size_available"] or 0, capture_cap) for r in real)
+        return {"n": n, "markets": len(set(r["pair_id"] for r in rows)), "open_now": open_now,
+                "real_shaped": len(real), "real_markets": len(set(r["pair_id"] for r in real)),
+                "persistent": persistent, "median_ms": float(median_ms), "max_edge": float(max_edge),
+                "hyp_profit": float(hyp), "capture_cap": capture_cap,
+                "top": Counter(r["pair_id"] for r in rows).most_common(5)}
 
     def prune_pairs(self, keep_ids) -> int:
         """Drop pairs (and their live quotes) not in keep_ids — used by the sports

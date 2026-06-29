@@ -147,20 +147,22 @@ def edge_report_text(cfg) -> str:
     from .store import Store
     st = Store(cfg.db_path)
     now = time.time()
+    cap = getattr(cfg, "max_order_size", 10)
 
     def block(s) -> str:
         if s["n"] == 0:
             return "  no actionable edges detected"
         top = ", ".join(f"{p}×{c}" for p, c in s["top"][:3])
-        return (f"  {s['n']} edges across {s.get('markets', '?')} markets ({s['open_now']} open now)\n"
-                f"  catchable 1–30s: {s['catchable']} (across {s.get('catch_markets', '?')} distinct markets)\n"
-                f"  persistent >30s (likely not real): {s['persistent']}\n"
+        return (f"  {s['n']} edges across {s['markets']} markets ({s['open_now']} open now)\n"
+                f"  ✅ real-shaped (≤5s, non-persistent): {s['real_shaped']} across {s['real_markets']} markets\n"
+                f"  ✖ persistent >5min (not real): {s['persistent']}\n"
                 f"  median life: {s['median_ms']/1000:.1f}s  |  biggest: {s['max_edge']*100:.1f}%\n"
-                f"  hypothetical if every one captured: ${s['hyp_profit']:.2f}\n"
+                f"  realistic capture (≤{int(cap)}/order): ${s['hyp_profit']:.2f}\n"
                 f"  most active: {top}")
-    return ("📈 Arb edge report (paper/detection)\n— last 24h —\n"
-            + block(st.edge_stats(now - 86400))
-            + "\n— last 7d —\n" + block(st.edge_stats(now - 7 * 86400)))
+    return ("📈 Arb edge report (paper/detection)\n"
+            "‘real-shaped’ = the only kind that could be a true arb.\n— last 24h —\n"
+            + block(st.edge_stats(now - 86400, cap))
+            + "\n— last 7d —\n" + block(st.edge_stats(now - 7 * 86400, cap)))
 
 
 def _cmd_report(cfg) -> str:
