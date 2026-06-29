@@ -191,6 +191,31 @@ class KalshiClient(VenueClient):
         bal = self._get("/portfolio/balance")
         return float(bal.get("balance_dollars", bal.get("balance", 0)))
 
+    # ── LIVE order placement (needs a Read/Write key) ────────
+    def _post(self, path: str, body: dict) -> dict:
+        full_path = "/trade-api/v2" + path
+        url = self.cfg.kalshi_rest_base + path
+        r = httpx.post(url, json=body, headers=self._headers("POST", full_path), timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def place_order(self, ticker: str, side: str, count: float, price: float,
+                    tif: str = "immediate_or_cancel", client_order_id: str | None = None) -> dict:
+        """Create order (V2). side: 'bid'=buy YES, 'ask'=sell YES. price in dollars
+        (0..1). To take the NO/opponent side, buy YES on the opponent's ticker."""
+        import uuid
+        body = {
+            "ticker": ticker,
+            "side": side,
+            "count": "%.2f" % float(count),
+            "price": "%.4f" % float(price),
+            "time_in_force": tif,
+            "self_trade_prevention_type": "taker_at_cross",
+            "client_order_id": client_order_id or uuid.uuid4().hex,
+            "post_only": False,
+        }
+        return self._post("/portfolio/events/orders", body)
+
     # ── feed ─────────────────────────────────────────────────
     async def stream_books(
         self,

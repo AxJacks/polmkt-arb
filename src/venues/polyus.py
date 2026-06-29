@@ -110,6 +110,29 @@ class PolyUSClient(VenueClient):
         b = balances[0]
         return float(b.get("buyingPower", b.get("currentBalance", 0)))
 
+    # ── LIVE order placement (Ed25519 header auth is sufficient) ──
+    def _post(self, endpoint: str, body: dict) -> dict:
+        url = self.cfg.polyus_rest_base + endpoint
+        r = httpx.post(url, json=body, headers=self._headers("POST", url), timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def place_order(self, market_slug: str, outcome_side: str, action: str,
+                    quantity: float, price: float,
+                    tif: str = "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL") -> dict:
+        """Create order. outcome_side: 'OUTCOME_SIDE_YES'/'OUTCOME_SIDE_NO';
+        action: 'ORDER_ACTION_BUY'/'ORDER_ACTION_SELL'. price tick 0.01."""
+        body = {
+            "marketSlug": market_slug,
+            "type": "ORDER_TYPE_LIMIT",
+            "outcomeSide": outcome_side,
+            "action": action,
+            "quantity": quantity,
+            "price": {"value": "%.2f" % float(price), "currency": "USD"},
+            "tif": tif,
+        }
+        return self._post("/orders", body)
+
     # ── feed ─────────────────────────────────────────────────
     async def stream_books(
         self,
