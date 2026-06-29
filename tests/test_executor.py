@@ -181,7 +181,9 @@ def _cfg(tmp_path, **over):
     base = dict(db_path=str(tmp_path / "e.db"), kill_switch_file=str(tmp_path / "HALT"),
                 min_edge=0.01, min_size=10, slippage_buffer=0.005,
                 settlement_window_s=3600, max_order_size=10, max_total_capital=100,
-                max_contracts_per_market=20, max_concurrent_arbs=2)
+                max_contracts_per_market=20, max_concurrent_arbs=2,
+                # CRITICAL: never send real Telegram from tests
+                telegram_bot_token="", telegram_chat_id="")
     base.update(over)
     return dataclasses.replace(load_config(), **base)
 
