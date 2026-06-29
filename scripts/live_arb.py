@@ -40,6 +40,8 @@ ap.add_argument("--test-alert", action="store_true")
 ap.add_argument("--leagues", default="atp,wta")
 ap.add_argument("--min-edge", type=float, default=0.02)
 ap.add_argument("--max-edge", type=float, default=0.10)
+ap.add_argument("--max-spread", type=float, default=0.05,
+                help="reject if Kalshi bid/ask spread > this (caps worst-case miss-unwind loss)")
 ap.add_argument("--min-size", type=float, default=10)
 ap.add_argument("--max-capital", type=float, default=20.0)
 ap.add_argument("--max-daily-loss", type=float, default=20.0)
@@ -278,6 +280,9 @@ try:
                     print("skip %4.1f%% %-24s — too big (artifact)" % (edge * 100, tag)); continue
                 if b_size < args.min_size or a_depth < 2:
                     print("skip %4.1f%% %-24s — thin book" % (edge * 100, tag)); continue
+                if (b_ask - b_bid) > args.max_spread:   # wide Kalshi spread => big unwind loss on a miss
+                    print("skip %4.1f%% %-24s — wide spread %.2f (unwind risk)"
+                          % (edge * 100, tag, b_ask - b_bid)); continue
                 print("✅ REAL EDGE %4.1f%% | %-24s | A@poly %.2f + B@kalshi %.2f (sz %.0f)"
                       % (edge * 100, tag, a_ask, b_ask, b_size))
                 if args.go:
