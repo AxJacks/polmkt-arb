@@ -1,31 +1,29 @@
-"""Supervised LIVE cross-venue tennis arb runner ($20 test) with Telegram alerts.
+"""Supervised LIVE cross-venue tennis arb runner ($20) with Telegram alerts.
 
-SAFE-BY-DESIGN:
-  • Only fires the structure where BOTH legs are simple "buy YES" orders (proven
-    in live_proof): buy player-A on Poly (YES) + buy player-B on Kalshi (YES on
-    the opponent's own market). No Poly-NO, no Kalshi short side.
-  • Rejects implausible (>max-edge) and thin-book edges (data artifacts).
-  • Kalshi leg first (synchronous fill), then Poly hedge; if Poly doesn't confirm
-    within leg2-timeout, unwind the Kalshi leg so you're never left naked.
-  • STOPS on: (a) realized LOSS reaching --max-daily-loss ($20) — the only
-    "lost it" stop; (b) --max-capital ($20) DEPLOYED — out of money, not a loss;
-    (c) a HALT sentinel file. Each trade is 1 contract.
-  • Telegram alert on every trade (locked profit / unwind loss) + running totals.
+CORRECT side mapping (the bug fix): Poly's OUTCOME_SIDE_YES buys the marketSide
+with long==True (NOT outcomes[0]). So:
+  • Poly YES = the long-side player (call them A). We BUY A on Poly (YES).
+  • We BUY the OTHER player (B) on Kalshi (B's own market, YES) — the hedge.
+Both legs are simple "buy YES" orders (proven safe). Opposite players => real hedge.
 
-NOTE: a hedge's cash P&L realizes when the MATCH SETTLES (hours later). During the
-run, "locked" = guaranteed profit if the hedge holds; "realized" = unwind losses.
+Safety:
+  • Runtime hedge check: after both legs fill, confirm Poly holds A and Kalshi
+    holds B (DIFFERENT players). If it ever holds the SAME player on both
+    (any residual mapping error), EMERGENCY FLATTEN both + HALT.
+  • Reject >max-edge (artifacts) + thin books; one trade per match.
+  • Kalshi leg first (sync), then Poly; unwind Kalshi if Poly misses.
+  • Stops on: realized LOSS == --max-daily-loss; --max-capital deployed; HALT file
+    (Telegram /halt creates it). 1 contract/trade. P&L from real balance deltas.
 
-  ./.venv/bin/python scripts/live_arb.py                # DRY RUN (watch, no orders)
-  ./.venv/bin/python scripts/live_arb.py --test-alert   # send sample Telegram alerts
-  ./.venv/bin/python scripts/live_arb.py --go           # LIVE
+  python -u scripts/live_arb.py                # DRY RUN
+  python -u scripts/live_arb.py --test-alert   # sample alerts
+  python -u scripts/live_arb.py --go           # LIVE
 """
 import argparse
-import json as _json
 import os
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,8 +35,8 @@ from src.venues.kalshi import KalshiClient
 from src.venues.polyus import PolyUSClient
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--go", action="store_true", help="ACTUALLY place real orders")
-ap.add_argument("--test-alert", action="store_true", help="send sample Telegram alerts and exit")
+ap.add_argument("--go", action="store_true")
+ap.add_argument("--test-alert", action="store_true")
 ap.add_argument("--leagues", default="atp,wta")
 ap.add_argument("--min-edge", type=float, default=0.02)
 ap.add_argument("--max-edge", type=float, default=0.10)
@@ -47,6 +45,7 @@ ap.add_argument("--max-capital", type=float, default=20.0)
 ap.add_argument("--max-daily-loss", type=float, default=20.0)
 ap.add_argument("--poll", type=float, default=1.0)
 ap.add_argument("--leg2-timeout", type=float, default=3.0)
+ap.add_argument("--rediscover", type=float, default=1800, help="refresh the slate every N seconds")
 args = ap.parse_args()
 
 cfg = load_config()
@@ -57,33 +56,41 @@ SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
 PFEE = PolyUSFeeModel()
 LEAGUES = [x.strip() for x in args.leagues.split(",") if x.strip()]
 
-locked = 0.0     # sum of guaranteed profit from completed hedges (settles at match end)
-realized = 0.0   # realized cash from unwinds (immediate); negative = loss
-deployed = 0.0   # capital committed to open hedge legs
-done = set()     # matches already traded — never double-up / rapid-fire the same edge
+locked = realized = deployed = 0.0
+done = set()
+
+# Persisted balance floor: survives restarts so the $20-loss cap can't reset.
+# Records starting total balance once; halts if real balance ever falls that far.
+BASE = Path("secrets/.arb_baseline")
+_last_floor_check = [0.0]
+
+
+def _total_balance():
+    return kc.get_balance() + pc.get_balance()
+
+
+def start_balance():
+    if BASE.exists():
+        try:
+            return float(BASE.read_text().strip())
+        except Exception:
+            pass
+    sb = _total_balance()
+    BASE.write_text("%.4f" % sb)
+    return sb
 
 
 def running():
-    return "locked +$%.2f (pending settlement) | realized $%.2f | deployed $%.2f/$%.0f" % (
-        locked, realized, deployed, args.max_capital)
+    return ("locked +$%.2f (pending settlement) | realized $%.2f | deployed $%.2f/$%.0f"
+            % (locked, realized, deployed, args.max_capital))
 
 
-# ── sample alerts so you can verify the format/accuracy before going live ──
 if args.test_alert:
-    print("sending sample alerts to Telegram ...")
-    notify.send("▶️ SAMPLE: Live arb test ARMED — ATP/WTA, max $20 deployed, 1 contract/trade, "
-                "stops only if $20 is LOST. (locked profit settles when each match ends)")
-    notify.send("✅ SAMPLE TRADE — Frech vs Kalinskaya\n"
-                "bought Kalinskaya @Kalshi 0.44, Frech @Poly 0.48\n"
-                "LOCKED +$0.05 (settles at match end)\n"
-                "running: locked +$0.05 | realized $0.00 | deployed $0.92/$20")
-    notify.send("⚠️ SAMPLE MISSED HEDGE — Shelton vs Virtanen\n"
-                "Poly leg didn't fill in 3s; unwound Kalshi\n"
-                "realized -$0.03\nrunning: locked +$0.05 | realized -$0.03 | deployed $0.92/$20")
-    notify.send("🛑 SAMPLE STOP — daily loss limit hit ($20 lost)\n"
-                "final: locked +$1.20 (pending) | realized -$20.00 | deployed $0.00")
-    print("sent. Check your phone — that's exactly what you'll get on real trades.")
-    sys.exit(0)
+    notify.send("▶️ SAMPLE: Live arb test ARMED — ATP/WTA, $20, 1 contract, stops only if $20 LOST.")
+    notify.send("✅ SAMPLE HEDGE — Nakashima(Poly) + Jones(Kalshi)\ncost $0.95 → LOCKED +$0.05\nrunning: ...")
+    notify.send("⚠️ SAMPLE MISSED — Poly leg didn't fill; unwound Kalshi. realized -$0.04")
+    notify.send("🛑 SAMPLE STOP — daily loss limit hit ($20 lost)")
+    print("sample alerts sent."); sys.exit(0)
 
 MODE = "LIVE — REAL ORDERS" if args.go else "DRY RUN"
 print("=== live tennis arb runner [%s]  caps: 1 contract, $%.0f deployed, $%.0f loss ===\n"
@@ -107,9 +114,14 @@ def discover():
         for m in km:
             games.setdefault(m["ticker"].rsplit("-", 1)[0], []).append(m)
         for pm in pm_list:
-            outs = pm.get("outcomes")
-            outs = _json.loads(outs) if isinstance(outs, str) else outs
-            if not outs or len(outs) < 2:
+            sides = pm.get("marketSides") or []
+            yes_s = next((s for s in sides if s.get("long") is True), None)
+            no_s = next((s for s in sides if s.get("long") is False), None)
+            if not (yes_s and no_s):
+                continue
+            a = (yes_s.get("team") or {}).get("name") or yes_s.get("description")  # Poly YES player
+            b = (no_s.get("team") or {}).get("name") or no_s.get("description")    # other player
+            if not (a and b):
                 continue
             pstart = _parse_iso(pm.get("gameStartTime"))
             for pref, mk in games.items():
@@ -118,16 +130,15 @@ def discover():
                 dt, _ = _parse_kalshi_game_dt(pref)
                 if not (dt and pstart and abs((dt - pstart).total_seconds()) <= 36 * 3600):
                     continue
-                k1 = next((m for m in mk if _names_match(outs[0], m.get("yes_sub_title") or "")), None)
-                k2 = next((m for m in mk if m is not k1 and _names_match(outs[1], m.get("yes_sub_title") or "")), None)
-                if k1 and k2:
-                    matches.append({"slug": pm["slug"], "p1": outs[0], "p2": outs[1],
-                                    "k1": k1["ticker"], "k2": k2["ticker"]})
+                k_b = next((m for m in mk if _names_match(b, m.get("yes_sub_title") or "")), None)
+                k_a = next((m for m in mk if m is not k_b and _names_match(a, m.get("yes_sub_title") or "")), None)
+                if k_a and k_b:   # both players found on Kalshi
+                    matches.append({"slug": pm["slug"], "A": a, "B": b, "kB": k_b["ticker"]})
                     break
     return matches
 
 
-def poly_p1(slug):
+def poly_yes(slug):
     md = pc._get("/markets/%s/bbo" % slug).get("marketData", {})
     ba = (md.get("bestAsk") or {}).get("value"); bb = (md.get("bestBid") or {}).get("value")
     return (float(ba) if ba else None, float(bb) if bb else None, float(md.get("askDepth") or 0))
@@ -139,68 +150,105 @@ def kalshi_q(ticker):
     return (float(ya) if ya else None, float(yb) if yb else None, float(m.get("yes_ask_size_fp") or 0))
 
 
-def kfee(ticker):
+def kfee(t):
     try:
-        return kc.get_fee_model(ticker)
+        return kc.get_fee_model(t)
     except Exception:
         return KalshiFeeModel(0.07, 0.0175)
 
 
 def halted():
     if HALT.exists():
-        return "HALT file present"
+        return "HALT file present (Telegram /halt or manual)"
     if realized <= -abs(args.max_daily_loss):
         return "daily LOSS limit hit (lost $%.2f)" % -realized
+    # Restart-proof real-money floor: actual balance fell >= cap below start.
+    now = time.time()
+    if now - _last_floor_check[0] > 25:
+        _last_floor_check[0] = now
+        try:
+            drop = START_BAL - _total_balance()
+            if drop >= abs(args.max_daily_loss):
+                return "balance floor hit — down $%.2f from start (real loss)" % drop
+        except Exception:
+            pass
     if deployed >= args.max_capital:
         return "capital fully deployed ($%.2f) — out of money, not a loss" % deployed
     return None
 
 
-def execute(mt, p1_ask, k2_ask, k2_bid):
-    """All $ figures are computed from ACTUAL balance deltas (truth), not order-
-    response estimates, so the alerts are exact."""
+def poly_held(slug):
+    pos = pc._get("/portfolio/positions").get("positions", {})
+    for s, p in pos.items():
+        if slug in str(s):
+            return p.get("marketMetadata", {}).get("outcome")
+    return None
+
+
+def emergency_flatten(mt, k_filled, slug_held_outcome):
+    """Bug guard: we ended up holding the SAME player on both venues. Close both."""
+    global realized
+    msg = "🚨 SAFETY: same player on both venues (not a hedge) — EMERGENCY FLATTEN + HALT."
+    print("   " + msg); notify.send(msg)
+    try:
+        kb, _, _ = kalshi_q(mt["kB"])
+        if k_filled:
+            kc.place_order(mt["kB"], "ask", 1, kb)   # sell back the Kalshi leg
+        if slug_held_outcome:
+            bbo = pc._get("/markets/%s/bbo" % mt["slug"]).get("marketData", {})
+            bid = float((bbo.get("bestBid") or {}).get("value") or 0.01)
+            pc.place_order(mt["slug"], "OUTCOME_SIDE_YES", "ORDER_ACTION_SELL", 1, bid)
+    except Exception as e:
+        notify.send("🚨 emergency flatten error: %s — CHECK POSITIONS MANUALLY" % repr(e)[:120])
+    HALT.touch()
+
+
+def execute(mt, a_ask, b_ask, b_bid):
+    """Buy A on Poly (YES) + B on Kalshi (kB). Opposite players => hedge."""
     global deployed, realized, locked
-    done.add(mt["slug"])   # one attempt per match — no double-up / rapid-fire
-    tot0 = kc.get_balance() + pc.get_balance()   # total cash before
-    print("  >> KALSHI buy 1 %s YES @ %.2f (P2=%s) ..." % (mt["k2"], k2_ask, mt["p2"][:16]))
-    kr = kc.place_order(mt["k2"], "bid", 1, k2_ask)
+    done.add(mt["slug"])
+    tot0 = kc.get_balance() + pc.get_balance()
+    print("  >> KALSHI buy 1 %s YES @ %.2f (B=%s) ..." % (mt["kB"], b_ask, mt["B"][:16]))
+    kr = kc.place_order(mt["kB"], "bid", 1, b_ask)
     if float(kr.get("fill_count", "0") or 0) < 1:
-        print("     kalshi IOC didn't fill — aborted, no position."); return
-    kprice = float(kr.get("average_fill_price", k2_ask))
-    print("     filled @ %.3f" % kprice)
-    print("  >> POLY buy 1 %s YES @ %.2f (P1=%s) ..." % (mt["slug"], p1_ask, mt["p1"][:16]))
-    pc.place_order(mt["slug"], "OUTCOME_SIDE_YES", "ORDER_ACTION_BUY", 1, p1_ask)
-    t0, filled = time.time(), False
+        print("     kalshi IOC didn't fill — aborted."); return
+    print("     filled @ %.3f" % float(kr.get("average_fill_price", b_ask)))
+    print("  >> POLY buy 1 %s YES @ %.2f (A=%s) ..." % (mt["slug"], a_ask, mt["A"][:16]))
+    pc.place_order(mt["slug"], "OUTCOME_SIDE_YES", "ORDER_ACTION_BUY", 1, a_ask)
+    t0, held = time.time(), None
     while time.time() - t0 < args.leg2_timeout:
-        pos = pc._get("/portfolio/positions").get("positions", {})
-        if any(mt["slug"] in str(k) for k in pos):
-            filled = True; break
+        held = poly_held(mt["slug"])
+        if held:
+            break
         time.sleep(0.4)
-    tag = "%s vs %s" % (mt["p1"], mt["p2"])
-    if filled:
-        spent = tot0 - (kc.get_balance() + pc.get_balance())   # actual cash deployed
-        deployed += spent
-        lk = 1.0 - spent                                       # $1 payout at settlement − cost
-        locked += lk
-        msg = ("✅ HEDGE PLACED — %s\nbought %s @Kalshi %.2f, %s @Poly %.2f\n"
-               "cost $%.2f → LOCKED +$%.2f (settles at match end)\nrunning: %s"
-               % (tag, mt["p2"][:14], kprice, mt["p1"][:14], p1_ask, spent, lk, running()))
+    tag = "%s(Poly) + %s(Kalshi)" % (mt["A"][:12], mt["B"][:12])
+    if held:
+        # SAFETY: Poly must hold A and Kalshi holds B — different players.
+        if _names_match(held, mt["B"]):     # same player on both venues!
+            emergency_flatten(mt, True, held); return
+        spent = tot0 - (kc.get_balance() + pc.get_balance())
+        deployed += spent; lk = 1.0 - spent; locked += lk
+        msg = ("✅ HEDGE PLACED — %s\ncost $%.2f → LOCKED +$%.2f (settles at match end)\nrunning: %s"
+               % (tag, spent, lk, running()))
         print("     ✅ LOCKED +$%.3f (cost $%.3f)" % (lk, spent)); notify.send(msg)
     else:
-        kc.place_order(mt["k2"], "ask", 1, k2_bid)             # unwind the naked Kalshi leg
-        loss = (kc.get_balance() + pc.get_balance()) - tot0    # actual realized cash change (<0)
+        kc.place_order(mt["kB"], "ask", 1, b_bid)   # unwind naked Kalshi leg
+        loss = (kc.get_balance() + pc.get_balance()) - tot0
         realized += loss
-        msg = ("⚠️ MISSED HEDGE — %s\nPoly leg didn't fill in %.0fs; unwound Kalshi\n"
-               "realized $%.2f\nrunning: %s" % (tag, args.leg2_timeout, loss, running()))
+        msg = ("⚠️ MISSED HEDGE — %s\nPoly leg didn't fill in %.0fs; unwound Kalshi\nrealized $%.2f\nrunning: %s"
+               % (tag, args.leg2_timeout, loss, running()))
         print("     ⚠ unwound; realized $%.3f" % loss); notify.send(msg)
 
 
+START_BAL = start_balance()
+print("balance floor: start $%.2f, will stop if it drops to $%.2f" % (START_BAL, START_BAL - args.max_daily_loss))
 print("discovering live %s matches ..." % ",".join(LEAGUES))
 matches = discover()
-print("watching %d matches. (Ctrl-C / `touch %s` to halt)\n" % (len(matches), HALT))
+last_disc = time.time()
+print("watching %d matches. (Telegram /halt or `touch %s` to stop)\n" % (len(matches), HALT))
 if args.go:
-    notify.send("▶️ LIVE arb test ARMED — %s, %d matches, max $%.0f deployed, 1 contract/trade. "
-                "Stops only if $%.0f is LOST. (locked profit settles at match end)"
+    notify.send("▶️ LIVE arb test ARMED — %s, %d matches, max $%.0f, 1 contract. Stops only if $%.0f LOST. "
+                "Kill: send /halt. (locked profit settles at match end)"
                 % (",".join(LEAGUES).upper(), len(matches), args.max_capital, args.max_daily_loss))
 try:
     while True:
@@ -210,33 +258,36 @@ try:
             if args.go:
                 notify.send("🛑 STOPPED — %s\nfinal: %s" % (h, running()))
             break
+        if time.time() - last_disc > args.rediscover:
+            matches = discover(); last_disc = time.time()
+            print("re-discovered %d matches" % len(matches))
         for mt in matches:
             if mt["slug"] in done:
                 continue
             try:
-                p1_ask, p1_bid, p_depth = poly_p1(mt["slug"])
-                k2_ask, k2_bid, k_size = kalshi_q(mt["k2"])
-                if not (p1_ask and k2_ask and k2_bid and 0 < p1_ask < 1 and 0 < k2_ask < 1):
+                a_ask, a_bid, a_depth = poly_yes(mt["slug"])
+                b_ask, b_bid, b_size = kalshi_q(mt["kB"])
+                if not (a_ask and b_ask and b_bid and 0 < a_ask < 1 and 0 < b_ask < 1):
                     continue
-                fee = kfee(mt["k2"]).taker_fee(k2_ask, 1) + PFEE.taker_fee(p1_ask, 1)
-                edge = 1.0 - (p1_ask + k2_ask + fee)
-                tag = "%s vs %s" % (mt["p1"][:14], mt["p2"][:14])
+                fee = kfee(mt["kB"]).taker_fee(b_ask, 1) + PFEE.taker_fee(a_ask, 1)
+                edge = 1.0 - (a_ask + b_ask + fee)
+                tag = "%s vs %s" % (mt["A"][:12], mt["B"][:12])
                 if edge < args.min_edge:
                     continue
                 if edge > args.max_edge:
-                    print("skip %4.1f%% %-26s — too big (artifact)" % (edge * 100, tag)); continue
-                if k_size < args.min_size or p_depth < 2:
-                    print("skip %4.1f%% %-26s — thin book (k sz %.0f, p depth %.0f)" % (edge * 100, tag, k_size, p_depth)); continue
-                print("✅ REAL EDGE %4.1f%% | %-26s | P1@poly %.2f + P2@kalshi %.2f (sz %.0f)"
-                      % (edge * 100, tag, p1_ask, k2_ask, k_size))
+                    print("skip %4.1f%% %-24s — too big (artifact)" % (edge * 100, tag)); continue
+                if b_size < args.min_size or a_depth < 2:
+                    print("skip %4.1f%% %-24s — thin book" % (edge * 100, tag)); continue
+                print("✅ REAL EDGE %4.1f%% | %-24s | A@poly %.2f + B@kalshi %.2f (sz %.0f)"
+                      % (edge * 100, tag, a_ask, b_ask, b_size))
                 if args.go:
-                    execute(mt, p1_ask, k2_ask, k2_bid)
+                    execute(mt, a_ask, b_ask, b_bid)
                 else:
-                    print("  (dry — would buy 1 %s YES + 1 %s YES)" % (mt["slug"][:18], mt["k2"]))
+                    print("  (dry — would buy %s on Poly YES + %s on Kalshi)" % (mt["A"][:12], mt["B"][:12]))
             except Exception:
                 pass
         time.sleep(args.poll)
 except KeyboardInterrupt:
     print("\nstopped. %s" % running())
     if args.go:
-        notify.send("⏹ Live arb test stopped manually.\nfinal: %s" % running())
+        notify.send("⏹ Live arb test stopped.\nfinal: %s" % running())
