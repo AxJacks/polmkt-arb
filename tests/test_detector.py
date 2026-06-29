@@ -100,6 +100,25 @@ def test_synthetic_divergence_records_edge_and_alert(tmp_path):
     assert (tmp_path / "recos.xlsx").exists()
 
 
+def test_close_open_and_purge_edges(tmp_path):
+    import time
+    from src.store import Store
+    store = Store(str(tmp_path / "c.db"))
+    now = time.time()
+    # one open phantom (peak 0.03), one implausible garbage (peak 0.9)
+    store.conn.execute("INSERT INTO edges (pair_id,structure,taker_edge,maker_edge,size_available,"
+                       "slippage_buffer,legs_json,opened_ts,peak_taker_edge,actionable) "
+                       "VALUES ('p','s',0.03,0,10,0.005,'[]',?,0.03,1)", (now - 50,))
+    store.conn.execute("INSERT INTO edges (pair_id,structure,taker_edge,maker_edge,size_available,"
+                       "slippage_buffer,legs_json,opened_ts,closed_ts,duration_ms,peak_taker_edge,actionable) "
+                       "VALUES ('p','s',0.9,0,10,0.005,'[]',?,?,5000,0.9,0)", (now - 60, now - 55))
+    store.conn.commit()
+    assert store.close_open_edges(now) == 1          # phantom closed
+    assert store.conn.execute("SELECT COUNT(*) FROM edges WHERE closed_ts IS NULL").fetchone()[0] == 0
+    assert store.purge_implausible_edges(0.10) == 1  # 0.9 garbage deleted
+    assert store.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == 1
+
+
 def test_tracker_opens_once_for_alert_dedup(tmp_path):
     from src.detector import OpportunityTracker
     from src.edge import compute_edges

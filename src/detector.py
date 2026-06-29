@@ -117,6 +117,10 @@ class Detector:
         self._last_alert: dict[tuple, float] = {}  # (pair_id, structure) -> last alert ts
 
     def load(self) -> None:
+        # a previous process may have left edges 'open' and pre-cap garbage rows;
+        # reconcile before we start so the edge stats are trustworthy.
+        self.store.close_open_edges(time.time())
+        self.store.purge_implausible_edges(getattr(self.cfg, "max_plausible_edge", 1.0))
         if self.sports_league:
             # DETECTION ONLY: auto-matched, UNVERIFIED pairs. Never tradable.
             from .scanner import ALL_SPORTS, build_macro_pairs, build_sports_pairs

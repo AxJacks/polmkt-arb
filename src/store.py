@@ -254,6 +254,23 @@ class Store:
                 (venue, market_id, dqty, price, ts),
             )
 
+    def close_open_edges(self, now: float) -> int:
+        """Close edges left 'open' by a previous process (the in-memory tracker
+        resets on restart, so these would otherwise linger as phantoms)."""
+        with self._tx() as c:
+            rows = c.execute("SELECT id, opened_ts FROM edges WHERE closed_ts IS NULL").fetchall()
+            for r in rows:
+                c.execute("UPDATE edges SET closed_ts=?, duration_ms=?, actionable=0 WHERE id=?",
+                          (now, (now - r["opened_ts"]) * 1000.0, r["id"]))
+        return len(rows)
+
+    def purge_implausible_edges(self, max_edge: float) -> int:
+        """Delete recorded edges above the plausibility cap (data errors from
+        before the guard existed, or transient bad quotes)."""
+        with self._tx() as c:
+            cur = c.execute("DELETE FROM edges WHERE peak_taker_edge > ?", (max_edge,))
+            return cur.rowcount
+
     def edge_stats(self, since_ts: float) -> dict:
         """Summarize detected (actionable, plausible) edges since since_ts — the
         empirical answer to 'is there a real, capturable arb?'. Persistence is
