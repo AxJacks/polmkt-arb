@@ -99,10 +99,11 @@ class OpportunityTracker:
 
 
 class Detector:
-    def __init__(self, cfg, kalshi_client, polyus_client) -> None:
+    def __init__(self, cfg, kalshi_client, polyus_client, sports_league: str | None = None) -> None:
         self.cfg = cfg
         self.kalshi = kalshi_client
         self.polyus = polyus_client
+        self.sports_league = sports_league
         self.books = OrderBookStore(cfg.staleness_ms)
         self.store = Store(cfg.db_path)
         self.tracker = OpportunityTracker(self.store)
@@ -110,11 +111,17 @@ class Detector:
         self._fees: dict[str, tuple] = {}  # pair_id -> (kalshi_fee, polyus_fee)
 
     def load(self) -> None:
-        self.pairs = [p for p in load_mappings(self.cfg.mappings_path)]
+        if self.sports_league:
+            # DETECTION ONLY: auto-matched, UNVERIFIED sports games. Never tradable.
+            from .scanner import build_sports_pairs
+            self.pairs = build_sports_pairs(self.cfg, self.kalshi, self.polyus, self.sports_league)
+            log.warning("SPORTS watch mode: %d auto-matched %s games (UNVERIFIED — detection only)",
+                        len(self.pairs), self.sports_league.upper())
+        else:
+            self.pairs = [p for p in load_mappings(self.cfg.mappings_path)]
+            log.info("loaded %d verified mapped pairs", len(self.pairs))
         for p in self.pairs:
             self.store.upsert_pair(p)
-        log.info("loaded %d mapped pairs (%d enabled)",
-                 len(self.pairs), sum(p.enabled for p in self.pairs))
 
     def _fees_for(self, pair: MappedPair) -> tuple:
         if pair.id not in self._fees:
@@ -197,6 +204,8 @@ def main() -> None:
 
     ap = argparse.ArgumentParser(description="Phase 1 cross-venue arb detector (no trading)")
     ap.add_argument("--log-level", default="INFO")
+    ap.add_argument("--sports", metavar="LEAGUE", default=None,
+                    help="watch live no-draw sports (e.g. mlb) instead of mappings.yaml (detection only)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -205,7 +214,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         handlers=[logging.FileHandler(cfg.log_path), logging.StreamHandler()],
     )
-    det = Detector(cfg, KalshiClient(cfg), PolyUSClient(cfg))
+    det = Detector(cfg, KalshiClient(cfg), PolyUSClient(cfg), sports_league=args.sports)
     try:
         asyncio.run(det.run())
     except KeyboardInterrupt:

@@ -234,12 +234,13 @@ def _parse_iso(s: str):
         return None
 
 
-def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
-    from datetime import timezone
+def match_sports_games(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
+    """Pair Poly moneyline games to Kalshi per-team game markets by team-set +
+    start time. Returns list of dicts: {km1 (Kalshi team1 market), pm (Poly
+    market), c1, c2, start}. A = team1 (c1) wins. Shared by scanner + watcher."""
     kc, pc = kalshi_client, polyus_client
     poly_prefix, k_series = SPORTS_ROUTES[league]
 
-    # Poly moneyline (no-draw) markets for the league
     poly, off = [], 0
     while off < 8000:
         b = pc._get("/markets", {"active": "true", "closed": "false",
@@ -250,21 +251,17 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
                  and m.get("sportsMarketTypeV2") == "SPORTS_MARKET_TYPE_MONEYLINE"]
         off += 500
 
-    # Kalshi per-team game markets, grouped by game
     km = kc._get("/markets", {"series_ticker": k_series, "status": "open", "limit": 1000}).get("markets", [])
     games = {}
     for m in km:
         pref = m["ticker"].rsplit("-", 1)[0]
         code = m["ticker"].rsplit("-", 1)[1].upper()
         games.setdefault(pref, {"dt": _parse_kalshi_game_dt(pref), "teams": {}})["teams"][code] = m
-    # index by team-set
     by_set = {}
-    for pref, g in games.items():
+    for g in games.values():
         by_set.setdefault(frozenset(g["teams"]), []).append(g)
 
-    pfee = PolyUSFeeModel()
-    fee_cache = {}
-    results = []
+    matches = []
     for pm in poly:
         parts = pm["slug"][len(poly_prefix):].split("-")
         if len(parts) < 3:
@@ -275,15 +272,21 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
         if not cand:
             continue
         pstart = _parse_iso(pm.get("gameStartTime"))
-        g = None
-        for cg in cand:
-            if cg["dt"] and pstart and abs((cg["dt"] - pstart).total_seconds()) <= window_h * 3600:
-                g = cg
-                break
+        g = next((cg for cg in cand if cg["dt"] and pstart
+                  and abs((cg["dt"] - pstart).total_seconds()) <= window_h * 3600), None)
         if g is None or c1 not in g["teams"]:
             continue
-        # A = team1 (c1) wins
-        km1 = g["teams"][c1]
+        matches.append({"km1": g["teams"][c1], "pm": pm, "c1": c1, "c2": c2, "start": pstart})
+    return matches
+
+
+def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
+    kc, pc = kalshi_client, polyus_client
+    pfee = PolyUSFeeModel()
+    fee_cache = {}
+    results = []
+    for mt in match_sports_games(cfg, kc, pc, league, window_h):
+        km1, pm, c1, c2 = mt["km1"], mt["pm"], mt["c1"], mt["c2"]
         kb = _kalshi_book(km1)               # Kalshi YES = c1 wins; NO = c2 (no draw)
         if kb is None:
             continue
@@ -293,7 +296,7 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
             pb = None
         if pb is None:
             continue
-        st = km1.get("series_ticker") or k_series
+        st = km1.get("series_ticker") or SPORTS_ROUTES[league][1]
         if st not in fee_cache:
             try:
                 fee_cache[st] = kc.get_fee_model(km1["ticker"])
@@ -303,6 +306,32 @@ def scan_sports(cfg, kalshi_client, polyus_client, league="mlb", window_h=12):
         results.append((league, km1, pm, res, c1, c2))
     results.sort(key=lambda x: -x[3].best.taker_edge)
     return results
+
+
+def build_sports_pairs(cfg, kalshi_client, polyus_client, league="mlb"):
+    """Auto-built, UNVERIFIED MappedPairs for live sports watching (detection
+    only — these never enter mappings.yaml and are never tradable by the
+    executor). settlement_time = game start + 6h (≈ end) so games aren't gated
+    out during play. A = team1 wins; both venues invert=False."""
+    from datetime import timedelta, timezone
+
+    from .mapping import MappedPair, VenueLeg
+    pairs = []
+    for mt in match_sports_games(cfg, kalshi_client, polyus_client, league):
+        km1, pm, c1, c2 = mt["km1"], mt["pm"], mt["c1"], mt["c2"]
+        end = (mt["start"] or _parse_iso(pm.get("gameStartTime"))) or _parse_kalshi_game_dt(km1["ticker"])
+        if end is None:
+            continue
+        end = end + timedelta(hours=6)
+        ymeans = f"{c1} beats {c2}"
+        pairs.append(MappedPair(
+            id=f"{league.upper()} {c1}v{c2} {(mt['start'] or end).strftime('%m-%d')}",
+            kalshi=VenueLeg(km1["ticker"], ymeans, "venue settlement", end,
+                            "no-draw; UNVERIFIED auto-match", False),
+            polyus=VenueLeg(pm["slug"], ymeans, "venue settlement", end,
+                            "no-draw; UNVERIFIED auto-match", False),
+            verified_by="AUTO-SCANNER (unverified)", verified_at="auto", enabled=True))
+    return pairs
 
 
 def main() -> None:
