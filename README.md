@@ -122,6 +122,17 @@ persistence duration. Point it at any db with `--db ./arb.db --port 8787`.
 ./.venv/bin/python -m src.detector --log-level INFO
 ```
 
+**Live sports watch** (detection only — auto-matched, never tradable):
+
+```bash
+./.venv/bin/python -m src.detector --sports mlb
+```
+
+Streams the day's no-draw moneyline games (Poly moneyline ⇄ Kalshi `KXMLBGAME`,
+matched by team-set + start time) through the same pipeline, computing
+cross-venue edges live as lines move. These pairs never enter `mappings.yaml`
+and the executor can never trade them.
+
 It subscribes to top-of-book for every mapped market on both venues, maintains
 best bid/ask + size with a staleness timestamp, computes per-pair edges every
 `EDGE_POLL_MS`, logs to `arb.log`, writes actionable edges to `recos.xlsx`
