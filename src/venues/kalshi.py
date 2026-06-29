@@ -11,13 +11,17 @@ so we derive a clean top-of-book:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import time
 from typing import Awaitable, Callable
 
 import httpx
 import websockets
+
+log = logging.getLogger("arb.kalshi")
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -182,32 +186,45 @@ class KalshiClient(VenueClient):
         on_book: Callable[[str, VenueBook], Awaitable[None] | None],
     ) -> None:
         path = "/trade-api/ws/v2"
-        ts = int(time.time() * 1000)
-        headers = {
-            "KALSHI-ACCESS-KEY": self.cfg.kalshi_key_id,
-            "KALSHI-ACCESS-TIMESTAMP": str(ts),
-            "KALSHI-ACCESS-SIGNATURE": sign(self.pk, ts, "GET", path),
-        }
-        states: dict[str, _BookState] = {m: _BookState() for m in market_ids}
-        async with websockets.connect(self.cfg.kalshi_ws_url, additional_headers=headers) as ws:
-            await ws.send(json.dumps({
-                "id": 1, "cmd": "subscribe",
-                "params": {"channels": ["orderbook_delta"], "market_tickers": market_ids},
-            }))
-            async for raw in ws:
-                m = json.loads(raw)
-                mtype = m.get("type")
-                msg = m.get("msg", {})
-                ticker = msg.get("market_ticker")
-                if ticker not in states:
-                    continue
-                if mtype == "orderbook_snapshot":
-                    states[ticker].snapshot(msg)
-                elif mtype == "orderbook_delta":
-                    states[ticker].delta(msg)
-                else:
-                    continue
-                book = states[ticker].top()
-                res = on_book(ticker, book)
-                if res is not None:
-                    await res
+        backoff = 1.0
+        while True:
+            try:
+                ts = int(time.time() * 1000)
+                headers = {
+                    "KALSHI-ACCESS-KEY": self.cfg.kalshi_key_id,
+                    "KALSHI-ACCESS-TIMESTAMP": str(ts),
+                    "KALSHI-ACCESS-SIGNATURE": sign(self.pk, ts, "GET", path),
+                }
+                states: dict[str, _BookState] = {m: _BookState() for m in market_ids}
+                async with websockets.connect(
+                    self.cfg.kalshi_ws_url, additional_headers=headers,
+                    ping_interval=20, ping_timeout=20,
+                ) as ws:
+                    await ws.send(json.dumps({
+                        "id": 1, "cmd": "subscribe",
+                        "params": {"channels": ["orderbook_delta"], "market_tickers": market_ids},
+                    }))
+                    backoff = 1.0  # connected cleanly; reset backoff
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        mtype = m.get("type")
+                        msg = m.get("msg", {})
+                        ticker = msg.get("market_ticker")
+                        if ticker not in states:
+                            continue
+                        if mtype == "orderbook_snapshot":
+                            states[ticker].snapshot(msg)
+                        elif mtype == "orderbook_delta":
+                            states[ticker].delta(msg)
+                        else:
+                            continue
+                        book = states[ticker].top()
+                        res = on_book(ticker, book)
+                        if res is not None:
+                            await res
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Kalshi WS dropped (%s); reconnecting in %.0fs", repr(e)[:120], backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)

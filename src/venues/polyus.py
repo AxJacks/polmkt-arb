@@ -12,14 +12,18 @@ If Poly US later exposes an independent NO book we subscribe to it directly.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import time
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 import httpx
 import websockets
+
+log = logging.getLogger("arb.polyus")
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ..books import VenueBook
@@ -102,32 +106,45 @@ class PolyUSClient(VenueClient):
         market_ids: list[str],
         on_book: Callable[[str, VenueBook], Awaitable[None] | None],
     ) -> None:
-        ts = int(time.time() * 1000)
         path = urlsplit(self.cfg.polyus_ws_url).path
-        headers = {
-            "X-PM-Access-Key": self.cfg.polyus_key_id,
-            "X-PM-Timestamp": str(ts),
-            "X-PM-Signature": sign(self.key, ts, "GET", path),
-        }
-        async with websockets.connect(self.cfg.polyus_ws_url, additional_headers=headers) as ws:
-            await ws.send(json.dumps({
-                "subscribe": {
-                    "requestId": "md-sub-1",
-                    "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA",
-                    "marketSlugs": market_ids,
+        backoff = 1.0
+        while True:
+            try:
+                ts = int(time.time() * 1000)
+                headers = {
+                    "X-PM-Access-Key": self.cfg.polyus_key_id,
+                    "X-PM-Timestamp": str(ts),
+                    "X-PM-Signature": sign(self.key, ts, "GET", path),
                 }
-            }))
-            async for raw in ws:
-                m = json.loads(raw)
-                book = self._parse_book(m)
-                if book is None:
-                    continue
-                slug, vbook = book
-                if slug not in market_ids:
-                    continue
-                res = on_book(slug, vbook)
-                if res is not None:
-                    await res
+                async with websockets.connect(
+                    self.cfg.polyus_ws_url, additional_headers=headers,
+                    ping_interval=20, ping_timeout=20,
+                ) as ws:
+                    await ws.send(json.dumps({
+                        "subscribe": {
+                            "requestId": "md-sub-1",
+                            "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA",
+                            "marketSlugs": market_ids,
+                        }
+                    }))
+                    backoff = 1.0
+                    async for raw in ws:
+                        m = json.loads(raw)
+                        book = self._parse_book(m)
+                        if book is None:
+                            continue
+                        slug, vbook = book
+                        if slug not in market_ids:
+                            continue
+                        res = on_book(slug, vbook)
+                        if res is not None:
+                            await res
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Poly US WS dropped (%s); reconnecting in %.0fs", repr(e)[:120], backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     @staticmethod
     def _parse_book(m: dict) -> tuple[str, VenueBook] | None:
