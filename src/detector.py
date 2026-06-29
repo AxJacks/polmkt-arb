@@ -115,8 +115,9 @@ class Detector:
             # DETECTION ONLY: auto-matched, UNVERIFIED sports games. Never tradable.
             from .scanner import build_sports_pairs
             self.pairs = build_sports_pairs(self.cfg, self.kalshi, self.polyus, self.sports_league)
-            log.warning("SPORTS watch mode: %d auto-matched %s games (UNVERIFIED — detection only)",
-                        len(self.pairs), self.sports_league.upper())
+            removed = self.store.prune_pairs([p.id for p in self.pairs])
+            log.warning("SPORTS watch mode: %d auto-matched %s games (UNVERIFIED — detection only); pruned %d finished",
+                        len(self.pairs), self.sports_league.upper(), removed)
         else:
             self.pairs = [p for p in load_mappings(self.cfg.mappings_path)]
             log.info("loaded %d verified mapped pairs", len(self.pairs))

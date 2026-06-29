@@ -74,9 +74,28 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+# nightly slate refresh: restart the detector each morning (before games) so it
+# rolls to the new day's games automatically and prunes finished ones.
+cat > /etc/systemd/system/polmkt-refresh.service <<UNIT
+[Unit]
+Description=polmkt-arb refresh sports slate (restart detector)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart polmkt-detector
+UNIT
+cat > /etc/systemd/system/polmkt-refresh.timer <<UNIT
+[Unit]
+Description=refresh polmkt sports slate daily
+[Timer]
+OnCalendar=*-*-* 13:00:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+
 # 4. enable + (re)start
 systemctl daemon-reload
-systemctl enable --now polmkt-detector polmkt-bot polmkt-dashboard polmkt-daily.timer
+systemctl enable --now polmkt-detector polmkt-bot polmkt-dashboard polmkt-daily.timer polmkt-refresh.timer
 systemctl restart polmkt-detector polmkt-bot polmkt-dashboard
 
 echo

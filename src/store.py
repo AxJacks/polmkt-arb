@@ -254,6 +254,18 @@ class Store:
                 (venue, market_id, dqty, price, ts),
             )
 
+    def prune_pairs(self, keep_ids) -> int:
+        """Drop pairs (and their live quotes) not in keep_ids — used by the sports
+        watcher so finished games don't linger in the dashboard. Returns # removed."""
+        keep = set(keep_ids)
+        with self._tx() as c:
+            stale = [r["id"] for r in c.execute("SELECT id FROM pairs").fetchall()
+                     if r["id"] not in keep]
+            for sid in stale:
+                c.execute("DELETE FROM pairs WHERE id=?", (sid,))
+                c.execute("DELETE FROM quotes WHERE pair_id=?", (sid,))
+        return len(stale)
+
     def positions(self) -> dict[tuple[str, str], float]:
         rows = self.conn.execute("SELECT venue, market_id, net_qty FROM positions").fetchall()
         return {(r["venue"], r["market_id"]): float(r["net_qty"]) for r in rows}

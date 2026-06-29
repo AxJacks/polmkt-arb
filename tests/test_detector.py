@@ -100,6 +100,22 @@ def test_synthetic_divergence_records_edge_and_alert(tmp_path):
     assert (tmp_path / "recos.xlsx").exists()
 
 
+def test_prune_pairs_removes_finished(tmp_path):
+    from src.store import Store
+    store = Store(str(tmp_path / "p.db"))
+    far = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    a = MappedPair("game-A", VenueLeg("k", "x", "s", far, "n", False),
+                   VenueLeg("p", "x", "s", far, "n", False), "auto", "auto", True)
+    b = MappedPair("game-B", VenueLeg("k2", "x", "s", far, "n", False),
+                   VenueLeg("p2", "x", "s", far, "n", False), "auto", "auto", True)
+    store.upsert_pair(a)
+    store.upsert_pair(b)
+    removed = store.prune_pairs(["game-B"])      # game-A finished
+    assert removed == 1
+    ids = [r["id"] for r in store.conn.execute("SELECT id FROM pairs").fetchall()]
+    assert ids == ["game-B"]
+
+
 def test_opportunity_persistence_open_then_close(tmp_path):
     cfg = dataclasses.replace(
         load_config(),
