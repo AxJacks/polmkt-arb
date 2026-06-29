@@ -281,8 +281,8 @@ class Store:
             "FROM edges WHERE opened_ts >= ?", (since_ts,)).fetchall()
         n = len(rows)
         if n == 0:
-            return {"n": 0, "open_now": 0, "catchable": 0, "persistent": 0,
-                    "median_ms": 0.0, "max_edge": 0.0, "hyp_profit": 0.0, "top": []}
+            return {"n": 0, "markets": 0, "open_now": 0, "catchable": 0, "catch_markets": 0,
+                    "persistent": 0, "median_ms": 0.0, "max_edge": 0.0, "hyp_profit": 0.0, "top": []}
         durs = sorted(r["duration_ms"] for r in rows if r["duration_ms"] is not None)
         open_now = sum(1 for r in rows if r["closed_ts"] is None)
         # "catchable" proxy: lived 1s–30s (long enough to act, short enough to be real)
@@ -293,7 +293,11 @@ class Store:
         hyp = sum((r["peak_taker_edge"] or 0) * (r["size_available"] or 0) for r in rows)
         from collections import Counter
         top = Counter(r["pair_id"] for r in rows).most_common(5)
-        return {"n": n, "open_now": open_now, "catchable": catchable, "persistent": persistent,
+        markets = len(set(r["pair_id"] for r in rows))
+        catch_markets = len(set(r["pair_id"] for r in rows
+                                if r["duration_ms"] is not None and 1000 <= r["duration_ms"] <= 30000))
+        return {"n": n, "markets": markets, "open_now": open_now, "catchable": catchable,
+                "catch_markets": catch_markets, "persistent": persistent,
                 "median_ms": float(median_ms), "max_edge": float(max_edge),
                 "hyp_profit": float(hyp), "top": top}
 

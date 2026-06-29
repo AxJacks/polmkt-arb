@@ -152,8 +152,9 @@ def edge_report_text(cfg) -> str:
         if s["n"] == 0:
             return "  no actionable edges detected"
         top = ", ".join(f"{p}×{c}" for p, c in s["top"][:3])
-        return (f"  {s['n']} edges ({s['open_now']} open now)\n"
-                f"  catchable 1–30s: {s['catchable']}  |  persistent >30s (likely not real): {s['persistent']}\n"
+        return (f"  {s['n']} edges across {s.get('markets', '?')} markets ({s['open_now']} open now)\n"
+                f"  catchable 1–30s: {s['catchable']} (across {s.get('catch_markets', '?')} distinct markets)\n"
+                f"  persistent >30s (likely not real): {s['persistent']}\n"
                 f"  median life: {s['median_ms']/1000:.1f}s  |  biggest: {s['max_edge']*100:.1f}%\n"
                 f"  hypothetical if every one captured: ${s['hyp_profit']:.2f}\n"
                 f"  most active: {top}")

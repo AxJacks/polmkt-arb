@@ -73,6 +73,9 @@ class Config:
     slippage_buffer: float = field(default_factory=lambda: _f("SLIPPAGE_BUFFER", 0.005))
     # Re-alert the same opportunity at most once per this many seconds.
     alert_cooldown_s: int = field(default_factory=lambda: _i("ALERT_COOLDOWN_S", 900))
+    # Don't re-record the same opportunity if it reopens within this window
+    # (collapses flicker on thin markets bouncing across the threshold).
+    reopen_cooldown_s: int = field(default_factory=lambda: _i("REOPEN_COOLDOWN_S", 120))
     # NOTE: staleness is measured from the last WS book message. Illiquid books
     # only push on change, so a quiet (not dead) feed can look stale — hence 30s.
     # Liquid markets (where arbs occur) update sub-second. A proper fix is

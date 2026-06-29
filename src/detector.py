@@ -86,19 +86,25 @@ class OpportunityTracker:
     def __init__(self, store: Store) -> None:
         self.store = store
         self._open: dict[tuple[str, str], int] = {}
+        self._last_close: dict[tuple[str, str], float] = {}
 
     def on_eval(self, pair_id: str, res: EdgeResult, actionable: bool, cfg, now: float) -> bool:
         """Returns True only when a NEW opportunity opens (so callers alert once,
-        not every poll)."""
+        not every poll). Suppresses flicker: won't reopen the same market within
+        REOPEN_COOLDOWN_S of its last close."""
         key = (pair_id, res.best.structure)
         edge_id = self._open.get(key)
         if actionable and edge_id is None:
+            cooldown = getattr(cfg, "reopen_cooldown_s", 120)
+            if now - self._last_close.get(key, -1e9) < cooldown:
+                return False   # flicker — treat as the same opportunity, don't re-record
             self._open[key] = self.store.open_edge(pair_id, res.best, cfg.slippage_buffer, now)
             return True
         elif actionable and edge_id is not None:
             self.store.bump_edge(edge_id, res.best.taker_edge, res.best.taker_size)
         elif not actionable and edge_id is not None:
             self.store.close_edge(edge_id, now)
+            self._last_close[key] = now
             del self._open[key]
         return False
 
