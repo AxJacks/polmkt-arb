@@ -80,6 +80,11 @@ class Config:
     recos_xlsx: str = field(default_factory=lambda: _s("RECOS_XLSX", "./recos.xlsx"))
     alert_webhook_url: str = field(default_factory=lambda: _s("ALERT_WEBHOOK_URL"))
 
+    # ── Telegram notifications ──────────────────────────────
+    telegram_bot_token: str = field(default_factory=lambda: _s("TELEGRAM_BOT_TOKEN"))
+    telegram_chat_id: str = field(default_factory=lambda: _s("TELEGRAM_CHAT_ID"))
+    telegram_alert_edges: bool = field(default_factory=lambda: _b("TELEGRAM_ALERT_EDGES", False))
+
     # ── Files ───────────────────────────────────────────────
     db_path: str = field(default_factory=lambda: _s("DB_PATH", "./arb.db"))
     log_path: str = field(default_factory=lambda: _s("LOG_PATH", "./arb.log"))

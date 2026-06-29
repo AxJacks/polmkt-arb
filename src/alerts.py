@@ -69,3 +69,8 @@ def emit_alert(cfg, ts: float, pair_id: str, structure, slippage_buffer: float) 
         "size": structure.taker_size,
         "legs": [l1.__dict__, l2.__dict__],
     })
+    try:  # Telegram (no-ops unless configured + TELEGRAM_ALERT_EDGES=true)
+        from .notify import Notifier
+        Notifier.from_config(cfg).edge(pair_id, structure)
+    except Exception as e:
+        log.warning("telegram edge alert failed: %s", e)

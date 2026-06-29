@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from ..edge import compute_edges, is_actionable, normalize
 from ..mapping import MappedPair
+from ..notify import Notifier
 from . import limits as L
 from .killswitch import KillSwitch
 from .router import LegPlan, PaperRouter, Router
@@ -68,6 +69,7 @@ class Executor:
         self.router = router or PaperRouter()
         self.limits = L.Limits.from_config(cfg)
         self.kill = KillSwitch(cfg.kill_switch_file, cfg.max_daily_loss, store)
+        self.notify = Notifier.from_config(cfg)
         self._inflight = 0
 
     @staticmethod
@@ -139,9 +141,12 @@ class Executor:
         self.store.add_pnl(self._today(), result.realized_pnl, fees)
         log.info("ARB %s %s hedged=%.0f pnl=%.4f", pair_id, result.status,
                  result.hedged_qty, result.realized_pnl)
+        if result.status != "leg1_no_fill":
+            self.notify.trade(pair_id, result)
         # daily-loss kill switch
         if self.store.get_today_realized(self._today()) <= -abs(self.cfg.max_daily_loss):
             self.kill.trip_for_loss()
+            self.notify.kill_switch(f"daily loss reached MAX_DAILY_LOSS (${self.cfg.max_daily_loss})")
 
 
 async def _run(cfg, kalshi, polyus, mode: str, router) -> None:
@@ -193,6 +198,7 @@ async def _run(cfg, kalshi, polyus, mode: str, router) -> None:
             await asyncio.sleep(cfg.edge_poll_ms / 1000.0)
 
     log.info("executor running in %s mode over %d pairs", mode, len(pairs))
+    ex.notify.startup(mode, len(pairs))
     await asyncio.gather(
         kalshi.stream_books([p.kalshi.market_id for p in pairs], handler("kalshi", k_idx)),
         polyus.stream_books([p.polyus.market_id for p in pairs], handler("polyus", p_idx)),
@@ -250,6 +256,10 @@ def main() -> None:
         asyncio.run(_run(cfg, kalshi, polyus, mode, router))
     except KeyboardInterrupt:
         log.info("executor stopped")
+    except Exception as e:
+        log.exception("executor crashed")
+        Notifier.from_config(cfg).error("executor", f"{type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":

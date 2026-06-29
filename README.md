@@ -219,6 +219,30 @@ threshold + period; auto-flags `>` vs `≥` comparator mismatches (the #1 fake-e
 trap). Writes UNVERIFIED suggestions only — never tradable until promoted to
 `mappings.yaml` by hand.
 
+## Telegram alerts & control
+
+Get texted on trades, errors, kill-switch trips, and a daily summary — and stop
+trading from your phone.
+
+**Setup:**
+1. Message **@BotFather** on Telegram → `/newbot` → copy the token into
+   `TELEGRAM_BOT_TOKEN` in `.env`.
+2. Send your new bot any DM, then run
+   `./.venv/bin/python -m src.notify chatid` and put the printed id in
+   `TELEGRAM_CHAT_ID`.
+3. Verify: `./.venv/bin/python -m src.notify test`.
+
+**What you get:** trade fills (status, hedged size, PnL net of fees), kill-switch
+trips, and crash/error alerts — automatically, from the running detector/executor.
+Set `TELEGRAM_ALERT_EDGES=true` to also text every detected edge (can be noisy).
+
+**Daily summary:** `./.venv/bin/python -m src.notify daily` (cron it, e.g. nightly).
+
+**Two-way control bot** (optional): `./.venv/bin/python -m src.notify listen`
+responds — only to your chat — to `/status`, `/pnl`, `/positions`, `/halt`
+(engages the kill switch), `/resume`. So you can text `/halt` to stop all new
+orders instantly.
+
 ---
 
 ## What this repo will never do

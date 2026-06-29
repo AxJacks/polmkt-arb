@@ -258,6 +258,27 @@ class Store:
         rows = self.conn.execute("SELECT venue, market_id, net_qty FROM positions").fetchall()
         return {(r["venue"], r["market_id"]): float(r["net_qty"]) for r in rows}
 
+    def daily_stats(self, date: str) -> dict:
+        """Summary for a UTC date 'YYYY-MM-DD' (realized/fees/kill switch + fill
+        count that day + open-position count)."""
+        from datetime import datetime, timezone
+        start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+        end = start + 86400
+        row = self.conn.execute(
+            "SELECT realized, fees, kill_switch_tripped FROM pnl_daily WHERE date=?", (date,)).fetchone()
+        fills = self.conn.execute(
+            "SELECT COUNT(*) FROM paper_fills WHERE ts >= ? AND ts < ?", (start, end)).fetchone()[0]
+        npos = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE net_qty != 0").fetchone()[0]
+        return {
+            "date": date,
+            "realized": float(row["realized"]) if row else 0.0,
+            "fees": float(row["fees"]) if row else 0.0,
+            "kill_switch_tripped": bool(row["kill_switch_tripped"]) if row else False,
+            "fills": int(fills),
+            "open_positions": int(npos),
+        }
+
     # ── candidates ───────────────────────────────────────────
     def record_candidate(self, c_dict: dict) -> None:
         with self._tx() as c:

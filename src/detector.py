@@ -215,10 +215,16 @@ def main() -> None:
         handlers=[logging.FileHandler(cfg.log_path), logging.StreamHandler()],
     )
     det = Detector(cfg, KalshiClient(cfg), PolyUSClient(cfg), sports_league=args.sports)
+    from .notify import Notifier
+    notifier = Notifier.from_config(cfg)
     try:
         asyncio.run(det.run())
     except KeyboardInterrupt:
         log.info("detector stopped")
+    except Exception as e:
+        log.exception("detector crashed")
+        notifier.error("detector", f"{type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":
