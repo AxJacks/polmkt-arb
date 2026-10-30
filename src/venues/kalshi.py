@@ -104,6 +104,9 @@ class KalshiClient(VenueClient):
         self.cfg = cfg
         self._pk = None
         self._fee_cache: dict[str, KalshiFeeModel] = {}
+        # Persistent connection (keep-alive): avoids a TCP+TLS handshake per
+        # request, which dominates latency in the order hot path.
+        self._http = httpx.Client(timeout=15)
 
     @property
     def pk(self):
@@ -126,7 +129,7 @@ class KalshiClient(VenueClient):
         # `path` is the signed path (without query); base already ends /trade-api/v2
         full_path = "/trade-api/v2" + path
         url = self.cfg.kalshi_rest_base + path
-        r = httpx.get(url, params=params, headers=self._headers("GET", full_path), timeout=15)
+        r = self._http.get(url, params=params, headers=self._headers("GET", full_path))
         r.raise_for_status()
         return r.json()
 
@@ -195,7 +198,7 @@ class KalshiClient(VenueClient):
     def _post(self, path: str, body: dict) -> dict:
         full_path = "/trade-api/v2" + path
         url = self.cfg.kalshi_rest_base + path
-        r = httpx.post(url, json=body, headers=self._headers("POST", full_path), timeout=15)
+        r = self._http.post(url, json=body, headers=self._headers("POST", full_path))
         r.raise_for_status()
         return r.json()
 

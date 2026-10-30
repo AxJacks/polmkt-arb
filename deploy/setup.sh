@@ -33,6 +33,9 @@ gen() { # name  description  execargs
 Description=$2
 After=network-online.target
 Wants=network-online.target
+# don't thrash on a hard config error (rate-limit keys live in [Unit])
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -41,9 +44,6 @@ WorkingDirectory=$DIR
 ExecStart=$PY $3
 Restart=always
 RestartSec=5
-# don't thrash on a hard config error
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -52,7 +52,10 @@ UNIT
 
 gen polmkt-detector "polmkt-arb detector (sports + macro + futures, paper detection)" "-m src.detector --sports all,macro,futures --log-level INFO"
 gen polmkt-bot      "polmkt-arb Telegram control bot (/status /halt …)"            "-m src.notify listen"
-gen polmkt-dashboard "polmkt-arb dashboard (token-gated, public:8787)"             "-m src.dashboard --db $DIR/arb.db --host 0.0.0.0 --port 8787"
+# NOTE: no --host here on purpose — dashboard.py binds 0.0.0.0 only when
+# DASHBOARD_TOKEN is set, else 127.0.0.1. Forcing 0.0.0.0 with an empty token
+# would expose an UNAUTHENTICATED positions/PnL page to the internet.
+gen polmkt-dashboard "polmkt-arb dashboard (token-gated public, else localhost)"   "-m src.dashboard --db $DIR/arb.db --port 8787"
 
 # nightly daily-summary (oneshot + timer)
 cat > /etc/systemd/system/polmkt-daily.service <<UNIT
@@ -78,10 +81,12 @@ UNIT
 # rolls to the new day's games automatically and prunes finished ones.
 cat > /etc/systemd/system/polmkt-refresh.service <<UNIT
 [Unit]
-Description=polmkt-arb refresh sports slate (restart detector)
+Description=polmkt-arb refresh sports slate (restart detector + live runner)
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/systemctl restart polmkt-detector
+# live runner exits when day-capped/halted; the daily refresh re-arms it (a
+# HALT file still stops it instantly at startup). Unit may not exist => ok.
+ExecStart=/usr/bin/bash -c 'systemctl restart polmkt-detector; systemctl restart polmkt-livearb.service 2>/dev/null || true'
 UNIT
 cat > /etc/systemd/system/polmkt-refresh.timer <<UNIT
 [Unit]
@@ -93,9 +98,35 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+# watchdog: self-heal + Telegram alert every 10 minutes (deploy/watchdog.sh)
+cat > /etc/systemd/system/polmkt-watchdog.service <<UNIT
+[Unit]
+Description=polmkt-arb watchdog (self-heal + alert)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash $DIR/deploy/watchdog.sh
+UNIT
+cat > /etc/systemd/system/polmkt-watchdog.timer <<UNIT
+[Unit]
+Description=run polmkt watchdog every 10 minutes
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+[Install]
+WantedBy=timers.target
+UNIT
+
+# cap journald so chatty INFO logging can never fill the disk
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/polmkt-size.conf <<UNIT
+[Journal]
+SystemMaxUse=400M
+UNIT
+systemctl restart systemd-journald
+
 # 4. enable + (re)start
 systemctl daemon-reload
-systemctl enable --now polmkt-detector polmkt-bot polmkt-dashboard polmkt-daily.timer polmkt-refresh.timer
+systemctl enable --now polmkt-detector polmkt-bot polmkt-dashboard polmkt-daily.timer polmkt-refresh.timer polmkt-watchdog.timer
 systemctl restart polmkt-detector polmkt-bot polmkt-dashboard
 
 echo

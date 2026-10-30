@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS pnl_daily (
 
 
 class Store:
+    # quotes_hist retention: every book update inserts a row (hundreds/sec on a
+    # busy sports slate — 243M rows / 21 GB in 11 days unpruned, which filled a
+    # droplet's disk). Rows older than this are pruned periodically.
+    QUOTES_HIST_RETENTION_S = 24 * 3600.0
+    _PRUNE_EVERY_S = 600.0
+
     def __init__(self, path: str) -> None:
         self.path = path
         self.conn = sqlite3.connect(path)
@@ -110,6 +116,7 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._last_prune = 0.0
 
     @contextmanager
     def _tx(self):
@@ -179,6 +186,11 @@ class Store:
                     no_bid, no_ask, ts_recv) VALUES (?,?,?,?,?,?,?)""",
                 (pair_id, venue, book.yes_bid, book.yes_ask, book.no_bid, book.no_ask, book.ts),
             )
+            now = time.time()
+            if now - self._last_prune > self._PRUNE_EVERY_S:
+                self._last_prune = now
+                c.execute("DELETE FROM quotes_hist WHERE ts_recv < ?",
+                          (now - self.QUOTES_HIST_RETENTION_S,))
 
     # ── edges / opportunity persistence ──────────────────────
     def open_edge(self, pair_id: str, structure_result, slippage_buffer: float, now: float) -> int:

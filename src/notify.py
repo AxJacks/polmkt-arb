@@ -169,6 +169,54 @@ def _cmd_report(cfg) -> str:
     return edge_report_text(cfg)
 
 
+def _cmd_live(cfg) -> str:
+    """Live-runner test progress from exec_timing.jsonl, scored against the
+    three scale-up gates (enough trades, low miss rate, positive net P&L)."""
+    import json as _json
+    from pathlib import Path
+    p = Path("exec_timing.jsonl")
+    rows = []
+    if p.exists():
+        for ln in p.read_text().splitlines():
+            try:
+                rows.append(_json.loads(ln))
+            except ValueError:
+                pass
+    if not rows:
+        return ("🧪 no live attempts yet — the runner is armed but hasn't seen a "
+                "qualifying edge. It logs every attempt here the moment one fires.")
+    hedged = [r for r in rows if r.get("outcome") == "hedged"]
+    missed = [r for r in rows if r.get("outcome") == "missed"]
+    nofill = sum(1 for r in rows if r.get("outcome") in ("k_nofill", "p_nofill", "no_budget"))
+    done = len(hedged) + len(missed)
+    miss_rate = (len(missed) / done) if done else 0.0
+    locked = sum(r.get("locked") or 0 for r in hedged)
+    miss_cost = sum(r.get("realized") or 0 for r in missed)
+    net = locked + miss_cost
+    lat = sorted(r["total_ms"] for r in rows if r.get("total_ms"))
+    polls = sum(1 for r in rows if r.get("p_via") == "poll")
+    TARGET = 20
+    gates = [
+        (f"{TARGET}+ completed trades", done >= TARGET, f"{done}/{TARGET}"),
+        ("miss rate under 20%", done >= 5 and miss_rate < 0.20,
+         f"{miss_rate * 100:.0f}%" if done else "n/a"),
+        ("net P&L positive", net > 0, _usd(net)),
+    ]
+    lines = ["🧪 live test progress",
+             f"attempts: {len(rows)} (hedged {len(hedged)}, missed {len(missed)}, "
+             f"free aborts {nofill})",
+             f"locked profit: {_usd(locked)} | miss cost: {_usd(miss_cost)} | net: {_usd(net)}"]
+    if lat:
+        p95 = lat[max(0, min(len(lat) - 1, int(len(lat) * 0.95)))]
+        lines.append(f"speed: median {lat[len(lat) // 2]}ms, p95 {p95}ms"
+                     + (f" | {polls} position-verified" if polls else ""))
+    lines.append("— scale-up gates —")
+    lines += [f"{'✅' if ok else '▢'} {name}: {val}" for name, ok, val in gates]
+    lines.append("🟢 ALL GATES PASSED — ready to raise caps" if all(g[1] for g in gates)
+                 else "keep running — raise caps only when all three pass")
+    return "\n".join(lines)
+
+
 def _cmd_dashboard(cfg) -> str:
     url = (cfg.dashboard_public_url or "").rstrip("/")
     if not url:
@@ -195,9 +243,9 @@ def listen(cfg) -> None:
     if not n.enabled:
         print("Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID).")
         return
-    n.send("🤖 command bot online. /status /report /pnl /positions /dashboard /version /halt /resume")
+    n.send("🤖 command bot online. /live /status /report /pnl /positions /dashboard /version /halt /resume")
     offset = None
-    HELP = "commands: /status /report /pnl /positions /dashboard /version /halt /resume /help"
+    HELP = "commands: /live /status /report /pnl /positions /dashboard /version /halt /resume /help"
     while True:
         try:
             r = httpx.get(_API.format(token=cfg.telegram_bot_token, method="getUpdates"),
@@ -209,7 +257,9 @@ def listen(cfg) -> None:
                 text = (msg.get("text") or "").strip().lower()
                 if chat != n.chat_id:
                     continue  # ignore everyone but the owner
-                if text.startswith("/status"):
+                if text.startswith("/live"):
+                    n.send(_cmd_live(cfg))
+                elif text.startswith("/status"):
                     n.send(_cmd_status(cfg))
                 elif text.startswith("/report"):
                     n.send(_cmd_report(cfg))

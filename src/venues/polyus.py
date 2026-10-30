@@ -59,6 +59,9 @@ class PolyUSClient(VenueClient):
     def __init__(self, cfg) -> None:
         self.cfg = cfg
         self._key = None
+        # Persistent connection (keep-alive): avoids a TCP+TLS handshake per
+        # request, which dominates latency in the order hot path.
+        self._http = httpx.Client(timeout=15)
 
     @property
     def key(self) -> Ed25519PrivateKey:
@@ -80,7 +83,7 @@ class PolyUSClient(VenueClient):
 
     def _get(self, endpoint: str, params: dict | None = None) -> dict:
         url = self.cfg.polyus_rest_base + endpoint
-        r = httpx.get(url, params=params, headers=self._headers("GET", url), timeout=15)
+        r = self._http.get(url, params=params, headers=self._headers("GET", url))
         r.raise_for_status()
         return r.json()
 
@@ -113,7 +116,7 @@ class PolyUSClient(VenueClient):
     # ── LIVE order placement (Ed25519 header auth is sufficient) ──
     def _post(self, endpoint: str, body: dict) -> dict:
         url = self.cfg.polyus_rest_base + endpoint
-        r = httpx.post(url, json=body, headers=self._headers("POST", url), timeout=15)
+        r = self._http.post(url, json=body, headers=self._headers("POST", url))
         r.raise_for_status()
         return r.json()
 

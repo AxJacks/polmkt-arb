@@ -157,7 +157,9 @@ async def _run(cfg, kalshi, polyus, mode: str, router) -> None:
     from ..mapping import load_mappings
     from ..store import Store
 
-    pairs = load_mappings(cfg.mappings_path)
+    # enabled=false pairs are drafts/retired — visible to the detector's skip
+    # logic but NEVER tradable here.
+    pairs = [p for p in load_mappings(cfg.mappings_path) if p.enabled]
     store = Store(cfg.db_path)
     ex = Executor(cfg, store, router=router, mode=mode)
     books = OrderBookStore(cfg.staleness_ms)
